@@ -16,6 +16,10 @@ approvals and interaction with Claude. It sleeps when nothing's happening,
 wakes when sessions start, gets visibly impatient when an approval prompt is
 waiting, and lets you approve or deny right from the device.
 
+<p align="center">
+  <img src="docs/device.jpg" alt="M5StickC Plus running the buddy firmware" width="500">
+</p>
+
 ## Hardware
 
 The firmware targets ESP32 with the Arduino framework. As written, it
@@ -46,9 +50,14 @@ Once running, you can also wipe everything from the device itself: **hold A
 
 To pair your device with Claude, first enable developer mode (**Help →
 Troubleshooting → Enable Developer Mode**). Then, open the Hardware Buddy
-window in **Developer → Hardware Buddy**, click **Connect**, and pick your
-device from the list. macOS will prompt for Bluetooth permission on first
-connect; grant it.
+window in **Developer → Open Hardware Buddy…**, click **Connect**, and pick
+your device from the list. macOS will prompt for Bluetooth permission on
+first connect; grant it.
+
+<p align="center">
+  <img src="docs/menu.png" alt="Developer → Open Hardware Buddy… menu item" width="420">
+  <img src="docs/hardware-buddy-window.png" alt="Hardware Buddy window with Connect button and folder drop target" width="420">
+</p>
 
 Once paired, the bridge auto-reconnects whenever both sides are awake.
 

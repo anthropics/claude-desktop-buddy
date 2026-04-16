@@ -5,6 +5,19 @@ You don't need anything from this repository to implement it. Any device
 that can advertise the Nordic UART Service and parse newline-delimited JSON
 will work: Arduino, ESP32, nRF52, a Raspberry Pi with a BLE dongle.
 
+## Enabling the bridge
+
+The BLE bridge is off by default. In Claude for macOS or Windows:
+
+1. **Help → Troubleshooting → Enable Developer Mode** — adds a **Developer**
+   menu to the menu bar.
+2. **Developer → Open Hardware Buddy…** — opens the pairing window.
+3. Click **Connect** and pick your device from the scan list. The OS will
+   prompt for Bluetooth permission on first use.
+
+Once paired the bridge auto-reconnects in the background; you only need the
+window open for initial pairing, the stats panel, or the folder drop target.
+
 ## Transport
 
 **BLE Nordic UART Service** (the de-facto serial-over-BLE standard):
