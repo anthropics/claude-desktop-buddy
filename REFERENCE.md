@@ -18,6 +18,14 @@ The BLE bridge is off by default. In Claude for macOS or Windows:
 Once paired the bridge auto-reconnects in the background; you only need the
 window open for initial pairing, the stats panel, or the folder drop target.
 
+## Which sessions the bridge surfaces
+
+The heartbeat counts Claude Cowork sessions and Claude Code sessions that
+run inside the desktop app. Claude Code launched via the standalone CLI
+(`claude` in a terminal) or from an editor extension is a separate process
+that doesn't talk to the desktop app, so those sessions don't appear on the
+bridge.
+
 ## Transport
 
 **BLE Nordic UART Service** (the de-facto serial-over-BLE standard):
