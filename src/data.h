@@ -78,11 +78,17 @@ static void _applyJson(const char* line, TamaState* out) {
   if (!t.isNull() && t.size() == 2) {
     time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
     struct tm lt; gmtime_r(&local, &lt);
-    RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
-    RTC_DateTypeDef dt = { (uint8_t)lt.tm_wday, (uint8_t)(lt.tm_mon + 1),
-                           (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
-    M5.Rtc.SetTime(&tm);
-    M5.Rtc.SetDate(&dt);
+    m5::rtc_time_t tm;
+    tm.hours = (int8_t)lt.tm_hour;
+    tm.minutes = (int8_t)lt.tm_min;
+    tm.seconds = (int8_t)lt.tm_sec;
+    m5::rtc_date_t dt;
+    dt.weekDay = (int8_t)lt.tm_wday;
+    dt.month = (int8_t)(lt.tm_mon + 1);
+    dt.date = (int8_t)lt.tm_mday;
+    dt.year = (int16_t)(lt.tm_year + 1900);
+    M5.Rtc.setTime(&tm);
+    M5.Rtc.setDate(&dt);
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
