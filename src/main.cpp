@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
+static void appRtcSynced(time_t localEpoch);
 #include "data.h"
 #include "buddy.h"
 
@@ -158,7 +159,9 @@ static void applySetting(uint8_t idx) {
   switch (idx) {
     case 0:
       brightLevel = (brightLevel + 1) % 5;
+      s.brightness = brightLevel;
       applyBrightness();
+      settingsSave();
       return;
     case 1: s.sound = !s.sound; break;
     case 2:
@@ -357,23 +360,130 @@ static m5::rtc_time_t _clkTm;
 static m5::rtc_date_t _clkDt;
 uint32_t               _clkLastRead = 0;   // zeroed by data.h on time-sync
 static bool            _onUsb       = false;
+static bool            _softRtcValid = false;
+static time_t          _softRtcLocalEpoch = 0;
+static uint32_t        _softRtcSyncMs = 0;
+static bool usbPresent() {
+  m5::board_t b = M5.getBoard();
+  if (b == m5::board_t::board_M5StickCPlus || b == m5::board_t::board_M5StickS3) {
+    return M5.Power.isCharging() || M5.Power.getVBUSVoltage() > 4000;
+  }
+  if (b == m5::board_t::board_M5StickCPlus2) {
+    // StickC Plus2 doesn't expose stable VBUS sensing; use battery voltage
+    // as the existing proxy so the clock can still engage while docked.
+    return M5.Power.getBatteryVoltage() > 3800;
+  }
+  return M5.Power.isCharging();
+}
+static bool rtcLooksValid() {
+  return _clkTm.hours >= 0 && _clkTm.hours <= 23
+      && _clkTm.minutes >= 0 && _clkTm.minutes <= 59
+      && _clkTm.seconds >= 0 && _clkTm.seconds <= 59
+      && _clkDt.month >= 1 && _clkDt.month <= 12
+      && _clkDt.date >= 1 && _clkDt.date <= 31
+      && _clkDt.weekDay >= 0 && _clkDt.weekDay <= 6
+      && _clkDt.year >= 2024 && _clkDt.year <= 2099;
+}
+static void rtcFromLocalEpoch(time_t localEpoch, m5::rtc_date_t* dt, m5::rtc_time_t* tm) {
+  struct tm lt;
+  gmtime_r(&localEpoch, &lt);
+  *tm = {};
+  tm->hours = lt.tm_hour;
+  tm->minutes = lt.tm_min;
+  tm->seconds = lt.tm_sec;
+  *dt = {};
+  dt->weekDay = lt.tm_wday;
+  dt->month = lt.tm_mon + 1;
+  dt->date = lt.tm_mday;
+  dt->year = lt.tm_year + 1900;
+}
+static void appRtcSynced(time_t localEpoch) {
+  m5::rtc_date_t dt;
+  m5::rtc_time_t tm;
+  rtcFromLocalEpoch(localEpoch, &dt, &tm);
+
+  _softRtcValid = true;
+  _softRtcLocalEpoch = localEpoch;
+  _softRtcSyncMs = millis();
+  _clkDt = dt;
+  _clkTm = tm;
+  _clkLastRead = 0;   // force re-read so hardware RTC gets a chance to take over
+
+  M5.Rtc.setDateTime(&dt, &tm);
+}
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  m5::board_t b = M5.getBoard();
-  if (b == m5::board_t::board_M5StickCPlus || b == m5::board_t::board_M5StickS3) {
-    _onUsb = M5.Power.getVBUSVoltage() > 4000;
-  } else if (b == m5::board_t::board_M5StickCPlus2) {
-    // StickC Plus2 doesn't have VBUS sense; use battery voltage as a proxy.
-    _onUsb = M5.Power.getBatteryVoltage() > 3800;
+  _onUsb = usbPresent();
+  m5::rtc_time_t hwTm;
+  m5::rtc_date_t hwDt;
+  if (M5.Rtc.getDateTime(&hwDt, &hwTm)) {
+    _clkTm = hwTm;
+    _clkDt = hwDt;
+    if (rtcLooksValid()) return;
   }
-  M5.Rtc.getTime(&_clkTm);
-  M5.Rtc.getDate(&_clkDt);
+
+  if (_softRtcValid) {
+    time_t localEpoch = _softRtcLocalEpoch + (time_t)((uint32_t)(millis() - _softRtcSyncMs) / 1000);
+    rtcFromLocalEpoch(localEpoch, &_clkDt, &_clkTm);
+  }
+}
+
+enum PowerStatus { PWR_BATTERY, PWR_USB, PWR_CHARGING, PWR_FULL };
+static uint32_t _pwrLastRead = 0;
+static int      _pwrBat_mV = 0;
+static int      _pwrBat_mA = 0;
+static int      _pwrPct = 0;
+static bool     _pwrUsb = false;
+static bool     _pwrCharging = false;
+static PowerStatus _pwrStatus = PWR_BATTERY;
+static uint8_t  _pwrFullStable = 0;
+static void powerRefresh() {
+  if (millis() - _pwrLastRead < 1000) return;
+  _pwrLastRead = millis();
+
+  _pwrBat_mV = M5.Power.getBatteryVoltage();
+  _pwrBat_mA = M5.Power.getBatteryCurrent();
+  _pwrPct = M5.Power.getBatteryLevel();
+  if (_pwrPct < 0) _pwrPct = 0;
+  if (_pwrPct > 100) _pwrPct = 100;
+  _pwrUsb = usbPresent();
+  _pwrCharging = M5.Power.isCharging();
+
+  if (!_pwrUsb) {
+    _pwrStatus = PWR_BATTERY;
+    _pwrFullStable = 0;
+    return;
+  }
+  if (_pwrCharging) {
+    _pwrStatus = PWR_CHARGING;
+    _pwrFullStable = 0;
+    return;
+  }
+  if (_pwrPct >= 100) {
+    if (_pwrFullStable < 3) _pwrFullStable++;
+    if (_pwrFullStable >= 3) {
+      _pwrStatus = PWR_FULL;
+      return;
+    }
+    if (_pwrStatus == PWR_CHARGING || _pwrStatus == PWR_FULL) return;
+  } else {
+    _pwrFullStable = 0;
+  }
+  _pwrStatus = PWR_USB;
 }
 
 static void clockUpdateOrient() {
   float ax, ay, az;
   M5.Imu.getAccel(&ax, &ay, &az);
+  // StickS3's in-plane axes are rotated relative to StickC Plus. Using ax on
+  // S3 makes portrait look like landscape and vice versa, so pick the board's
+  // actual side-axis before applying the shared hysteresis logic.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  float sideAxis = ay;
+#else
+  float sideAxis = ax;
+#endif
   uint8_t lock = settings().clockRot;
   if (lock == 1) { clockOrient = 0; return; }
   if (lock == 2) {
@@ -381,9 +491,9 @@ static void clockUpdateOrient() {
     // gravity so the cradle works either way up. Need a strong tilt
     // for the 1↔3 swap so handling jitter doesn't flip it; otherwise
     // hold whatever we last had (or 1 from boot).
-    if (clockOrient == 0) clockOrient = (ax >= 0) ? 1 : 3;
-    if      (ax >  0.5f && clockOrient != 1) clockOrient = 1;
-    else if (ax < -0.5f && clockOrient != 3) clockOrient = 3;
+    if (clockOrient == 0) clockOrient = (sideAxis >= 0) ? 1 : 3;
+    if      (sideAxis >  0.5f && clockOrient != 1) clockOrient = 1;
+    else if (sideAxis < -0.5f && clockOrient != 3) clockOrient = 3;
     return;
   }
   // Dual threshold: strict to enter (must be clearly sideways), loose to
@@ -391,20 +501,20 @@ static void clockUpdateOrient() {
   // while sitting on the long edge puts ax right at the boundary and the
   // counter ratchets down in ~half a second.
   bool side = (clockOrient == 0)
-    ? fabsf(ax) > 0.7f && fabsf(ay) < 0.5f && fabsf(az) < 0.5f
-    : fabsf(ax) > 0.4f;
+    ? fabsf(sideAxis) > 0.7f && fabsf(az) < 0.5f
+    : fabsf(sideAxis) > 0.4f;
   if (side) { if (orientFrames < 20) orientFrames++; }
   else      { if (orientFrames > -10) orientFrames--; }
   if (clockOrient == 0 && orientFrames >= 15) {
-    clockOrient = (ax > 0) ? 1 : 3;
+    clockOrient = (sideAxis > 0) ? 1 : 3;
   } else if (clockOrient != 0 && orientFrames <= -8) {
     clockOrient = 0;
   } else if (clockOrient != 0 && side) {
     // Direct 1↔3: a fast flip keeps |ax|>0.7 (just changes sign), so
     // `side` never drops and the exit-via-0 path can't fire. Watch for
-    // ax sign disagreeing with the stored orientation.
+    // side-axis sign disagreeing with the stored orientation.
     static int8_t swapFrames = 0;
-    uint8_t want = (ax > 0) ? 1 : 3;
+    uint8_t want = (sideAxis > 0) ? 1 : 3;
     if (want != clockOrient) { if (++swapFrames >= 8) { clockOrient = want; swapFrames = 0; } }
     else swapFrames = 0;
   }
@@ -421,10 +531,12 @@ static const char* const DOW[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 static uint8_t clockDow() { return _clkDt.weekDay % 7; }
 static void drawClock() {
   const Palette& p = characterPalette();
-  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.hours, _clkTm.minutes);
-  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.seconds);
+  if (!rtcLooksValid()) return;
+
+  char hm[6]; snprintf(hm, sizeof(hm), "%02d:%02d", (int)_clkTm.hours, (int)_clkTm.minutes);
+  char ss[4]; snprintf(ss, sizeof(ss), ":%02d", (int)_clkTm.seconds);
   uint8_t mi = (_clkDt.month >= 1 && _clkDt.month <= 12) ? _clkDt.month - 1 : 0;
-  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.date);
+  char dl[8]; snprintf(dl, sizeof(dl), "%s %02d", MON[mi], (int)_clkDt.date);
 
   if (clockOrient == 0) {
     paintedOrient = 0;
@@ -451,8 +563,8 @@ static void drawClock() {
   // for nothing. Gate on the second changing (or full repaint).
   if (repaint || _clkTm.seconds != lastSec) {
     lastSec = _clkTm.seconds;
-    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.date);
-    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.seconds);
+    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02d", DOW[clockDow()], MON[mi], (int)_clkDt.date);
+    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02d", (int)_clkTm.seconds);
     M5.Lcd.setTextDatum(MC_DATUM);
     M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
     M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
@@ -603,13 +715,13 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = M5.Power.getBatteryVoltage();
-    int iBat_mA = M5.Power.getBatteryCurrent();
-    int pct = M5.Power.getBatteryLevel();
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    bool usb      = M5.Power.getVBUSVoltage() > 4000;  // power present
-    bool charging  = M5.Power.isCharging();               // actively charging
-    bool full      = usb && !charging && pct >= 95;
+    powerRefresh();
+    int vBat_mV = _pwrBat_mV;
+    int iBat_mA = _pwrBat_mA;
+    int pct = _pwrPct;
+    bool usb = _pwrUsb;
+    bool charging = _pwrStatus == PWR_CHARGING;
+    bool full = _pwrStatus == PWR_FULL;
 
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
@@ -624,7 +736,7 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("  battery  %d.%02dV", vBat_mV/1000, (vBat_mV%1000)/10);
     ln("  current  %+dmA", iBat_mA);
-    if (usb) ln("  usb in   charging");
+    if (usb) ln("  usb in   %s", charging ? "charging" : full ? "full" : "present");
     y += 8;
 
     spr.setTextColor(p.text, p.bg);
@@ -953,10 +1065,11 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);   // off
   }
-  applyBrightness();
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  brightLevel = settings().brightness;
+  applyBrightness();
   petNameLoad();
   buddyInit();
 
@@ -1022,7 +1135,7 @@ void loop() {
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
     lastShakeCheck = now;
-    if (!menuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
+    if (!_onUsb && !menuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
       wake();
       triggerOneShot(P_DIZZY, 2000);
       Serial.println("shake: dizzy");
@@ -1161,7 +1274,7 @@ void loop() {
   bool clocking = displayMode == DISP_NORMAL
                && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
-               && dataRtcValid() && _onUsb;
+               && rtcLooksValid() && _onUsb;
   if (clocking) clockUpdateOrient();
   else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
   bool landscapeClock = clocking && clockOrient != 0;
