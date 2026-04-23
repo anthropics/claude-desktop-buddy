@@ -138,11 +138,14 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(true)) {
-    // begin(true) auto-formats on first use; also fails if already mounted
+  if (!LittleFS.begin(false)) {
+    // begin() fails if already mounted — that's fine on reload
     if (!LittleFS.open("/")) {
-      Serial.println("[char] LittleFS mount failed");
-      return false;
+      // Can't open root → not mounted → try formatting. If that fails, give up
+      if (!LittleFS.begin(true)) {
+        Serial.println("[char] LittleFS format/mount failed");
+        return false;
+      }
     }
   }
 

@@ -360,7 +360,13 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Power.isCharging();
+  m5::board_t b = M5.getBoard();
+  if (b == m5::board_t::board_M5StickCPlus || b == m5::board_t::board_M5StickS3) {
+    _onUsb = M5.Power.getVBUSVoltage() > 4000;
+  } else if (b == m5::board_t::board_M5StickCPlus2) {
+    // StickC Plus2 doesn't have VBUS sense; use battery voltage as a proxy.
+    _onUsb = M5.Power.getBatteryVoltage() > 3800;
+  }
   M5.Rtc.getTime(&_clkTm);
   M5.Rtc.getDate(&_clkDt);
 }
@@ -601,9 +607,9 @@ void drawInfo() {
     int iBat_mA = M5.Power.getBatteryCurrent();
     int pct = M5.Power.getBatteryLevel();
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    bool usb = M5.Power.isCharging();
-    bool charging = usb;
-    bool full = usb && pct >= 100;
+    bool usb      = M5.Power.getVBUSVoltage() > 4000;  // power present
+    bool charging  = M5.Power.isCharging();               // actively charging
+    bool full      = usb && !charging && pct >= 95;
 
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
