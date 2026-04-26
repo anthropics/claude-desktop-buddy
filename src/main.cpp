@@ -941,6 +941,7 @@ void setup() {
   M5.Lcd.setRotation(0);
   M5.Imu.Init();
   M5.Beep.begin();
+  battery::begin();
   startBt();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);   // off
