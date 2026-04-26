@@ -78,14 +78,13 @@ static void _applyJson(const char* line, TamaState* out) {
   if (!t.isNull() && t.size() == 2) {
     time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
     struct tm lt; gmtime_r(&local, &lt);
-    RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
-    RTC_DateTypeDef dt = { (uint8_t)lt.tm_wday, (uint8_t)(lt.tm_mon + 1),
-                           (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
-    M5.Rtc.SetTime(&tm);
-    M5.Rtc.SetDate(&dt);
+    BuddyTime tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
+    BuddyDate dt = { (uint16_t)(lt.tm_year + 1900), (uint8_t)(lt.tm_mon + 1),
+                     (uint8_t)lt.tm_mday, (uint8_t)lt.tm_wday };
+    buddyHalSetTimeDate(tm, dt);
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
-    _rtcValid = true;
+    _rtcValid = buddyHalRtcAvailable();
     _lastLiveMs = millis();
     return;
   }

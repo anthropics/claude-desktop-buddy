@@ -1,6 +1,18 @@
 #pragma once
 #include <stdint.h>
 
+// One include site for the M5 SDK. Switches by build target so the rest
+// of the code can use BuddySprite/BuddyCanvas without #ifdefs.
+#ifdef BUDDY_TARGET_STICKS3
+  #include <M5Unified.h>
+  using BuddySprite = M5Canvas;     // sprite-like offscreen buffer
+  using BuddyCanvas = LovyanGFX;    // common rendering base for sprite + display
+#else
+  #include <M5StickCPlus.h>
+  using BuddySprite = TFT_eSprite;
+  using BuddyCanvas = TFT_eSPI;
+#endif
+
 // Shared constants and helpers for buddy species files.
 // Each species file (src/buddies/<name>.cpp) includes this header
 // and defines its 7 state functions.

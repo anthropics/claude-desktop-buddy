@@ -24,7 +24,7 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // header strip; off renders full-size centered in the upper home area.
 // Adaptive to actual canvas height — no padding required in source art.
 void characterSetPeek(bool peek);
-class TFT_eSPI;
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
+#include "buddy_common.h"  // BuddyCanvas typedef
+void characterRenderTo(BuddyCanvas* tgt, int cx, int cy);
 
 const Palette& characterPalette();
