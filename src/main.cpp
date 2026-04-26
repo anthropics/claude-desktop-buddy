@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
+#include "battery.h"
 #include "data.h"
 #include "buddy.h"
 
@@ -991,6 +992,7 @@ void loop() {
   t++;
   uint32_t now = millis();
 
+  battery::poll();
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
   baseState = derive(tama);

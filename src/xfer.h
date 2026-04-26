@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include "ble_bridge.h"
+#include "battery.h"
 #include <mbedtls/base64.h>
 #include <ArduinoJson.h>
 
@@ -115,8 +116,10 @@ inline bool xferCommand(JsonDocument& doc) {
     int vBat = (int)(M5.Axp.GetBatVoltage() * 1000);
     int iBat = (int)M5.Axp.GetBatCurrent();
     int vBus = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat - 3200) / 10;
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    // Smoothed SoC: 30s median voltage → LiPo OCV-SOC table. The naive
+    // (vBat-3200)/10 mapping was so jumpy it was effectively random
+    // because BLE+LCD load yanks vBat by hundreds of mV. See battery.h.
+    int pct = battery::percent();
     char b[320];
     int len = snprintf(b, sizeof(b),
       "{\"ack\":\"status\",\"ok\":true,\"n\":0,\"data\":{"
