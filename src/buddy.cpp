@@ -1,9 +1,9 @@
 #include "buddy.h"
 #include "buddy_common.h"
-#include <M5StickCPlus.h>
+#include <M5Unified.h>
 #include <string.h>
 
-extern TFT_eSprite spr;
+extern M5Canvas spr;
 
 // Mirrors PersonaState in main.cpp
 enum { B_SLEEP, B_IDLE, B_BUSY, B_ATTENTION, B_CELEBRATE, B_DIZZY, B_HEART };
@@ -30,10 +30,10 @@ const uint16_t BUDDY_BLUE   = 0x041F;
 
 // ──────────────── shared rendering helpers ────────────────
 // Render target indirection: defaults to the sprite, but can retarget to
-// M5.Lcd for landscape clock mode (both inherit TFT_eSPI). Coords stay
+// M5.Lcd for landscape clock mode (both inherit LovyanGFX). Coords stay
 // fixed — species hardcode BUDDY_X_CENTER/BUDDY_Y_OVERLAY in their
 // particle calls, so retargeting position would only move the body.
-static TFT_eSPI* _tgt = &spr;
+static LovyanGFX* _tgt = &spr;
 // 2× on home screen, 1× in peek (PET/INFO) and landscape clock. Species
 // art is space-padded to a fixed width for alignment at 1×; at 2× we trim
 // and re-center per line so the padding doesn't push ink off-screen.
@@ -146,6 +146,15 @@ static uint8_t lastDrawnState = 0xFF;
 static uint8_t lastDrawnSpecies = 0xFF;
 void buddyInvalidate() { lastDrawnState = 0xFF; }
 
+// Redirect all buddy drawing to a different LovyanGFX target. Used by the
+// main loop to render the buddy into an offscreen sprite that then gets
+// pushed onto the main canvas via pushRotateZoom for fractional scaling.
+// Pass nullptr / the original spr to revert.
+void buddySetRenderTarget(LovyanGFX* tgt) {
+  _tgt = tgt ? tgt : (LovyanGFX*)&spr;
+  buddyInvalidate();
+}
+
 void buddySetPeek(bool peek) {
   uint8_t s = peek ? 1 : 2;
   if (s == _scale) return;
@@ -153,17 +162,17 @@ void buddySetPeek(bool peek) {
   buddyInvalidate();
 }
 
-// One-shot render to an arbitrary TFT_eSPI surface (M5.Lcd for landscape
+// One-shot render to an arbitrary LovyanGFX surface (M5.Lcd for landscape
 // clock). Bypasses tick gating and the sprite fillRect — caller owns
 // clearing. Advances the frame counter so animation runs even when
 // buddyTick is bypassed.
 // Landscape clock callsite — always 1×.
-void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState) {
+void buddyRenderTo(LovyanGFX* tgt, uint8_t personaState) {
   uint8_t prevS = _scale; _scale = 1;
   if (personaState >= 7) personaState = B_IDLE;
   uint32_t now = millis();
   if ((int32_t)(now - nextTickAt) >= 0) { nextTickAt = now + TICK_MS; tickCount++; }
-  TFT_eSPI* prev = _tgt;
+  LovyanGFX* prev = _tgt;
   _tgt = tgt;
   const Species* sp = SPECIES_TABLE[currentSpeciesIdx];
   if (sp->states[personaState]) sp->states[personaState](tickCount);
@@ -188,8 +197,14 @@ void buddyTick(uint8_t personaState) {
   lastDrawnSpecies = currentSpeciesIdx;
 
   // Clear the whole render strip — at 2× the body reaches y≈126, at 1× ≈82.
-  spr.fillRect(0, 0, BUDDY_CANVAS_W,
-               (BUDDY_Y_BASE + 5 * BUDDY_CHAR_H + 12) * _scale, BUDDY_BG);
+  // Use _tgt (not spr directly) so the clear targets whatever buffer the
+  // caller redirected us to via buddySetRenderTarget — needed for the
+  // pushRotateZoom path in main.cpp that scales the buddy non-integer.
+  // Width follows the actual target so wider offscreen sprites (used to
+  // give doBusy's dot ticker room past x=135 at scale=2) get cleared in
+  // full instead of leaving ink in the right margin.
+  _tgt->fillRect(0, 0, _tgt->width(),
+                 (BUDDY_Y_BASE + 5 * BUDDY_CHAR_H + 12) * _scale, BUDDY_BG);
 
   const Species* sp = SPECIES_TABLE[currentSpeciesIdx];
   if (sp->states[personaState]) sp->states[personaState](tickCount);
