@@ -22,7 +22,7 @@
 namespace battery {
 
 constexpr uint32_t SAMPLE_INTERVAL_MS = 1000;   // 1 Hz
-constexpr uint8_t  WINDOW = 30;                 // 30 samples = 30 s of history
+constexpr uint8_t  WINDOW = 60;                 // 60 samples = 60 s of history
 
 inline float _samples[WINDOW];
 inline uint8_t _count = 0;
