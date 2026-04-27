@@ -1,3 +1,4 @@
+#include <M5StickCPlus2.h>
 #pragma once
 #include <stdint.h>
 
@@ -25,6 +26,6 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // Adaptive to actual canvas height — no padding required in source art.
 void characterSetPeek(bool peek);
 class TFT_eSPI;
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
+void characterRenderTo(lgfx::LovyanGFX* tgt, int cx, int cy);
 
 const Palette& characterPalette();

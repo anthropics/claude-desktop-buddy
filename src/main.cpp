@@ -1,11 +1,11 @@
-#include <M5StickCPlus.h>
+#include <M5StickCPlus2.h>
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"
 
-TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+LGFX_Sprite spr(&M5.Lcd);
 
 // Advertise as "Claude-XXXX" (last two BT MAC bytes) so multiple sticks
 // in one room are distinguishable in the desktop picker. Name persists in
@@ -94,12 +94,14 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+// CHANGED: was bare Lcd.setBrightness (missing M5.) — Plus2 uses M5.Lcd.setBrightness
+static void applyBrightness() { M5.Lcd.setBrightness(20 + brightLevel * 20); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    // CHANGED: removed M5.Axp.SetLDO2(true) — not available on Plus2.
+    // applyBrightness() already restores the display via M5.Lcd.setBrightness.
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -108,8 +110,9 @@ static void wake() {
 }
 bool     responseSent = false;
 
+// CHANGED: M5.Beep.tone → M5.Speaker.tone (Plus2 uses M5Unified Speaker API)
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) M5.Speaker.tone(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -305,7 +308,8 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    // CHANGED: M5.Axp.PowerOff() → M5.Power.powerOff() for Plus2
+    case 1: M5.Power.powerOff(); break;
     case 2:
     case 3:
       menuOpen = false;
@@ -349,16 +353,19 @@ static uint8_t paintedOrient = 0;
 // RTC and IMU share an I2C bus. Reading the RTC at 60fps starves the IMU
 // reads in clockUpdateOrient — orientation detection gets noisy. Cache the
 // time once per second; mood logic and drawClock both read from here.
-static RTC_TimeTypeDef _clkTm;
-static RTC_DateTypeDef _clkDt;
+// CHANGED: RTC_TimeTypeDef/RTC_DateTypeDef → m5::rtc_time_t/m5::rtc_date_t (M5Unified types)
+static m5::rtc_time_t _clkTm;
+static m5::rtc_date_t _clkDt;
 uint32_t               _clkLastRead = 0;   // zeroed by data.h on time-sync
 static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  // CHANGED: M5.Axp.GetVBusVoltage() not available on Plus2 — use M5.Power.isCharging()
+  _onUsb = M5.Power.isCharging();
+  // CHANGED: GetTime/GetDate → getTime/getDate (M5Unified lowercase API)
+  M5.Rtc.getTime(&_clkTm);
+  M5.Rtc.getDate(&_clkDt);
 }
 
 static void clockUpdateOrient() {
@@ -408,13 +415,16 @@ static const char* const MON[] = {
 };
 static const char* const DOW[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 
-static uint8_t clockDow() { return _clkDt.WeekDay % 7; }
+// CHANGED: .WeekDay → .weekDay (m5::rtc_date_t uses lowercase fields)
+static uint8_t clockDow() { return _clkDt.weekDay % 7; }
 static void drawClock() {
   const Palette& p = characterPalette();
-  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.Hours, _clkTm.Minutes);
-  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.Seconds);
-  uint8_t mi = (_clkDt.Month >= 1 && _clkDt.Month <= 12) ? _clkDt.Month - 1 : 0;
-  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.Date);
+  // CHANGED: .Hours/.Minutes/.Seconds → .hours/.minutes/.seconds
+  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.hours, _clkTm.minutes);
+  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.seconds);
+  // CHANGED: .Month → .month, .Date → .date
+  uint8_t mi = (_clkDt.month >= 1 && _clkDt.month <= 12) ? _clkDt.month - 1 : 0;
+  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.date);
 
   if (clockOrient == 0) {
     paintedOrient = 0;
@@ -439,10 +449,13 @@ static void drawClock() {
 
   // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
   // for nothing. Gate on the second changing (or full repaint).
-  if (repaint || _clkTm.Seconds != lastSec) {
-    lastSec = _clkTm.Seconds;
-    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
-    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.Seconds);
+  // CHANGED: .Seconds → .seconds
+  if (repaint || _clkTm.seconds != lastSec) {
+    lastSec = _clkTm.seconds;
+    // CHANGED: .Date → .date
+    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.date);
+    // CHANGED: .Seconds → .seconds
+    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.seconds);
     M5.Lcd.setTextDatum(MC_DATUM);
     M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
     M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
@@ -593,14 +606,17 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
+    // M5.Power.getBatteryVoltage() already correct for Plus2
+    int vBat_mV = (int)(M5.Power.getBatteryVoltage() * 1000);
+    // CHANGED: AXP2101 does not expose battery current — hardcode 0
+    int iBat_mA = 0;
+    // CHANGED: AXP2101 has no VBus voltage read — derive from isCharging()
+    bool usb = M5.Power.isCharging();
+    int vBus_mV = usb ? 5000 : 0;
+    int pct = (vBat_mV - 3200) / 10;
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    bool usb = vBus_mV > 4000;
-    bool charging = usb && iBat_mA > 1;
-    bool full = usb && vBat_mV > 4100 && iBat_mA < 10;
+    bool charging = usb;
+    bool full = usb && vBat_mV > 4100;
 
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
@@ -614,7 +630,7 @@ void drawInfo() {
 
     spr.setTextColor(p.textDim, p.bg);
     ln("  battery  %d.%02dV", vBat_mV/1000, (vBat_mV%1000)/10);
-    ln("  current  %+dmA", iBat_mA);
+    ln("  current  n/a");   // AXP2101 does not report current
     if (usb) ln("  usb in   %d.%02dV", vBus_mV/1000, (vBus_mV%1000)/10);
     y += 8;
 
@@ -627,7 +643,8 @@ void drawInfo() {
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+    // CHANGED: M5.Axp.GetTempInAXP192() → temperatureRead() (ESP32 internal sensor)
+    ln("  temp     %dC", (int)temperatureRead());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -682,8 +699,9 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
-    ln("M5StickC Plus");
-    ln("ESP32 + AXP192");
+    // CHANGED: updated hardware description to match actual device
+    ln("M5StickC Plus2");
+    ln("ESP32 + AXP2101");
   }
 }
 
@@ -938,8 +956,10 @@ void drawHUD() {
 void setup() {
   M5.begin();
   M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  // CHANGED: M5.Imu.Init() → M5.Imu.init() (M5Unified uses lowercase)
+  M5.Imu.init();
+  // CHANGED: M5.Beep.begin() → M5.Speaker.begin() (Plus2 uses M5Unified Speaker)
+  M5.Speaker.begin();
   startBt();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);   // off
@@ -987,7 +1007,7 @@ void setup() {
 
 void loop() {
   M5.update();
-  M5.Beep.update();
+  // CHANGED: removed M5.Beep.update() — M5.Speaker does not need manual update()
   t++;
   uint32_t now = millis();
 
@@ -1051,13 +1071,15 @@ void loop() {
     wake();
   }
 
-  // AXP power button (left side): short-press toggles screen off.
-  // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  // Power button (left side): short-press toggles screen off.
+  // Long-press (6s) still powers off the device via hardware.
+  // CHANGED: M5.Axp.GetBtnPress() == 0x02 → M5.BtnPWR.wasClicked() (Plus2/M5Unified API)
+  if (M5.BtnPWR.wasClicked()) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      // CHANGED: M5.Axp.SetLDO2(false) → M5.Lcd.setBrightness(0) to blank screen on Plus2
+      M5.Lcd.setBrightness(0);
       screenOff = true;
     }
   }
@@ -1170,7 +1192,8 @@ void loop() {
     bool weekend = (dow == 0 || dow == 6);
     bool friday  = (dow == 5);
 
-    uint8_t h = _clkTm.Hours;
+    // CHANGED: .Hours → .hours
+    uint8_t h = _clkTm.hours;
     if (h >= 1 && h < 7)             activeState = P_SLEEP;
     else if (weekend)                activeState = (now/8000 % 6 == 0) ? P_HEART : P_SLEEP;
     else if (h < 9)                  activeState = (now/6000 % 4 == 0) ? P_IDLE  : P_SLEEP;
@@ -1243,7 +1266,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    M5.Lcd.setBrightness(8);
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1257,7 +1280,8 @@ void loop() {
   // No auto-off on USB power — clock face wants to stay visible while charging.
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+    // CHANGED: M5.Axp.SetLDO2(false) → M5.Lcd.setBrightness(0) for Plus2
+    M5.Lcd.setBrightness(0);
     screenOff = true;
   }
 
