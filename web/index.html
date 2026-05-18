@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Desktop Buddy — Web Installer</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #faf9f5;
+      --fg: #1a1a1a;
+      --muted: #6b6b6b;
+      --card: #ffffff;
+      --border: #e3e1d9;
+      --accent: #d97757;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1a1a;
+        --fg: #f5f4ef;
+        --muted: #a3a3a3;
+        --card: #262626;
+        --border: #3a3a3a;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+      display: flex;
+      justify-content: center;
+      padding: 3rem 1.25rem;
+    }
+    main { max-width: 640px; width: 100%; }
+    h1 { font-size: 2rem; margin: 0 0 0.5rem; }
+    .lede { color: var(--muted); margin: 0 0 2rem; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .install { text-align: center; }
+    esp-web-install-button { display: inline-block; }
+    esp-web-install-button[install-unsupported] { display: none; }
+    .unsupported {
+      display: none;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    esp-web-install-button[install-unsupported]
+      + .unsupported { display: block; }
+    a { color: var(--accent); }
+    ol { padding-left: 1.25rem; }
+    code {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.1rem 0.35rem;
+      font-size: 0.9em;
+    }
+    footer {
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: center;
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Claude Desktop Buddy</h1>
+    <p class="lede">
+      Flash the ESP32 desk-pet firmware straight from your browser — no
+      PlatformIO, no toolchain. Works on a M5StickC&nbsp;Plus.
+    </p>
+
+    <div class="card install">
+      <esp-web-install-button manifest="./manifest.json">
+        <button slot="activate">Install firmware</button>
+      </esp-web-install-button>
+      <p class="unsupported">
+        Your browser can't talk to serial devices. Open this page in
+        desktop Chrome, Edge, or Opera.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Before you start</h2>
+      <ol>
+        <li>Use desktop Chrome, Edge, or Opera (Web Serial is required).</li>
+        <li>Connect the M5StickC Plus to your computer over USB-C.</li>
+        <li>Click <strong>Install firmware</strong> and pick the device's
+          serial port.</li>
+        <li>Choose <strong>Install</strong> and wait for the flash to
+          finish.</li>
+      </ol>
+      <p>
+        Re-flashing an already-used device? The installer offers an erase
+        option — pick it for a clean factory state. You can also factory
+        reset from the device: <strong>hold A → settings → reset →
+        factory reset → tap twice</strong>.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>After flashing</h2>
+      <p>
+        Pair the buddy with Claude by enabling developer mode
+        (<strong>Help → Troubleshooting → Enable Developer Mode</strong>),
+        then open <strong>Developer → Open Hardware Buddy…</strong> and
+        click <strong>Connect</strong>. Full instructions are in the
+        <a href="https://github.com/anthropic/claude-desktop-buddy#readme">
+          README</a>.
+      </p>
+    </div>
+
+    <footer>
+      Built from
+      <a href="https://github.com/anthropic/claude-desktop-buddy">
+        anthropic/claude-desktop-buddy</a>.
+      Installer powered by
+      <a href="https://esphome.github.io/esp-web-tools/">esp-web-tools</a>.
+    </footer>
+  </main>
+</body>
+</html>
