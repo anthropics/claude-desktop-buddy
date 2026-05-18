@@ -29,7 +29,11 @@ your own pin layout.
 
 ## Flashing
 
-Install
+The easiest way is the browser-based **[web installer](https://anthropic.github.io/claude-desktop-buddy/)**:
+plug the stick in over USB, open the page in desktop Chrome/Edge/Opera, and
+click install. No toolchain required.
+
+To build and flash from source, install
 [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
 then:
 
