@@ -113,13 +113,17 @@ static void _applyJson(const char* line, TamaState* out) {
     }
     out->nLines = n;
   }
+  // Prompt handling: messages that don't mention `prompt` (keepalives,
+  // status updates, transcript pushes) MUST leave an active prompt alone.
+  // Set the prompt when an explicit `prompt` object arrives; clear only
+  // on the explicit `clear_prompt:true` sentinel.
   JsonObject pr = doc["prompt"];
   if (!pr.isNull()) {
     const char* pid = pr["id"]; const char* pt = pr["tool"]; const char* ph = pr["hint"];
     strncpy(out->promptId,   pid ? pid : "", sizeof(out->promptId)-1);   out->promptId[sizeof(out->promptId)-1]=0;
     strncpy(out->promptTool, pt  ? pt  : "", sizeof(out->promptTool)-1); out->promptTool[sizeof(out->promptTool)-1]=0;
     strncpy(out->promptHint, ph  ? ph  : "", sizeof(out->promptHint)-1); out->promptHint[sizeof(out->promptHint)-1]=0;
-  } else {
+  } else if (doc["clear_prompt"] | false) {
     out->promptId[0] = 0; out->promptTool[0] = 0; out->promptHint[0] = 0;
   }
   out->lastUpdated = millis();

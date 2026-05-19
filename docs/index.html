@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Skitz0s-desktop-buddy — CYD flasher</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    body {
+      max-width: 38rem;
+      margin: 3rem auto;
+      padding: 0 1.5rem;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+    .lede { color: #666; margin-top: 0; }
+    .install { margin: 2rem 0; }
+    esp-web-install-button {
+      --esp-tools-button-color: #fff;
+      --esp-tools-button-background-color: #cc785c;
+    }
+    .unsupported {
+      display: none;
+      padding: 0.75rem 1rem;
+      border-left: 3px solid #cc785c;
+      background: rgba(204, 120, 92, 0.08);
+      margin: 1rem 0;
+    }
+    code {
+      background: rgba(127, 127, 127, 0.15);
+      padding: 0.1em 0.35em;
+      border-radius: 3px;
+      font-size: 0.92em;
+    }
+    footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid rgba(127, 127, 127, 0.25);
+      font-size: 0.85rem;
+      color: #888;
+    }
+    a { color: #cc785c; }
+  </style>
+</head>
+<body>
+  <h1>skitz0-desktop-buddy &mdash; CYD flasher</h1>
+  <p class="lede">
+    Flash the firmware to your Cheap Yellow Display (ESP32-2432S028R)
+    directly from this page. No downloads, no command line.
+  </p>
+
+  <ol>
+    <li>Plug your CYD into your computer with a USB-C cable.</li>
+    <li>Click <strong>Connect</strong> below and pick the serial port that
+      appears (it'll be named something like <code>CH340</code> or
+      <code>CP210x</code>).</li>
+    <li>Click <strong>Install</strong>. Takes about 30 seconds.</li>
+  </ol>
+
+  <div class="install">
+    <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+  </div>
+
+  <p class="unsupported" id="unsupported">
+    Your browser doesn't support the Web Serial API. Use
+    <strong>Chrome, Edge, or Opera on a desktop computer.</strong>
+    Firefox, Safari, and mobile browsers can't talk to USB devices
+    from a web page.
+  </p>
+
+  <h2>After flashing</h2>
+  <p>
+    On first boot the device will ask you to calibrate the touchscreen
+    &mdash; tap each of the four corner targets. Then pair it with
+    Claude:
+  </p>
+  <ul>
+    <li><strong>Claude Desktop</strong> (macOS / Windows): enable
+      developer mode (Help &rarr; Troubleshooting), then
+      <em>Developer &rarr; Open Hardware Buddy &rarr; Connect</em>.</li>
+    <li><strong>Claude Code</strong> (Linux / macOS / Windows): install
+      the <a href="https://github.com/skitzo2000/ai-hardware-buddy">ai-hardware-buddy</a>
+      plugin.</li>
+  </ul>
+
+  <footer>
+    Firmware source:
+    <a href="https://github.com/skitzo2000/claude-desktop-buddy">github.com/skitzo2000/claude-desktop-buddy</a>
+    &middot; MIT licensed &middot; based on
+    <a href="https://github.com/anthropics/claude-desktop-buddy">Anthropic's claude-desktop-buddy</a>.
+  </footer>
+
+  <script>
+    if (!("serial" in navigator)) {
+      document.getElementById("unsupported").style.display = "block";
+    }
+  </script>
+</body>
+</html>

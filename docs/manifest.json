@@ -1,0 +1,16 @@
+{
+  "name": "claude-desktop-buddy (CYD)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "https://github.com/skitzo2000/claude-desktop-buddy/releases/latest/download/merged.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

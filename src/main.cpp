@@ -1,11 +1,17 @@
-#include <M5StickCPlus.h>
+#include "hal/board.h"
+#include "hal/power.h"
+#include "hal/led.h"
+#include "hal/audio.h"
+#include "hal/input.h"
+#include "hal/imu.h"
+#include "hal/rtc.h"
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"
 
-TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+TFT_eSprite spr = TFT_eSprite(&tft);
 
 // Advertise as "Claude-XXXX" (last two BT MAC bytes) so multiple sticks
 // in one room are distinguishable in the desktop picker. Name persists in
@@ -20,10 +26,9 @@ static void startBt() {
 
 #include "character.h"
 #include "stats.h"
-const int W = 135, H = 240;
+const int W = 240, H = 320;
 const int CX = W / 2;
-const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
+const int CY_BASE = 160;
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -56,7 +61,7 @@ uint16_t lastLineGen = 0;
 char     lastPromptId[40] = "";
 uint32_t lastInteractMs = 0;
 bool     dimmed = false;
-bool     screenOff = false;
+// screenOff defined in hal/power.cpp (extern from hal/power.h)
 bool     swallowBtnA = false;
 bool     swallowBtnB = false;
 bool     buddyMode = false;
@@ -90,16 +95,16 @@ uint32_t promptArrivedMs = 0;
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  imuRead(&ax, &ay, &az);
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() { powerBacklight(20 + brightLevel * 20); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    powerScreen(true);
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -109,7 +114,7 @@ static void wake() {
 bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) boardTone(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -134,7 +139,7 @@ void applyDisplayMode() {
   characterInvalidate();  // redraws character on next tick (text mode path)
 }
 
-const char* menuItems[] = { "settings", "turn off", "help", "about", "demo", "close" };
+const char* menuItems[] = { "settings", "sleep", "help", "about", "demo", "close" };
 const uint8_t MENU_N = 6;
 
 bool    settingsOpen = false;
@@ -250,7 +255,7 @@ static void drawMenuHints(const Palette& p, int mx, int mw, int hy,
 
 static void drawSettings() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + SETTINGS_N * 14 + MENU_HINT_H;
+  int mw = 220, mh = 20 + SETTINGS_N * 18 + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
@@ -260,15 +265,15 @@ static void drawSettings() {
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(mx + 10, my + 10 + i * 18);
     spr.print(sel ? "> " : "  ");
     spr.print(settingsItems[i]);
-    spr.setCursor(mx + mw - 36, my + 8 + i * 14);
+    spr.setCursor(mx + mw - 56, my + 10 + i * 18);
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
     } else if (i >= 1 && i <= 5) {
-      spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
+      spr.setTextColor(vals[i-1] ? TFT_GREEN : p.textDim, PANEL);
       spr.print(vals[i-1] ? " on" : "off");
     } else if (i == 6) {
       static const char* const RN[] = { "auto", "port", "land" };
@@ -284,15 +289,15 @@ static void drawSettings() {
 
 static void drawReset() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + RESET_N * 14 + MENU_HINT_H;
+  int mw = 200, mh = 24 + RESET_N * 24 + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, HOT);
-  spr.setTextSize(1);
+  spr.setTextSize(2);
   for (int i = 0; i < RESET_N; i++) {
     bool sel = (i == resetSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(mx + 8, my + 12 + i * 24);
     spr.print(sel ? "> " : "  ");
     bool armed = (i == resetConfirmIdx) &&
                  (int32_t)(millis() - resetConfirmUntil) < 0;
@@ -305,7 +310,7 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    case 1: powerSleep(); break;
     case 2:
     case 3:
       menuOpen = false;
@@ -321,19 +326,20 @@ void menuConfirm() {
 
 void drawMenu() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + MENU_N * 14 + MENU_HINT_H;
+  int mw = 200, mh = 24 + MENU_N * 24 + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
-  spr.setTextSize(1);
+  spr.setTextSize(2);
   for (int i = 0; i < MENU_N; i++) {
     bool sel = (i == menuSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(mx + 8, my + 12 + i * 24);
     spr.print(sel ? "> " : "  ");
     spr.print(menuItems[i]);
-    if (i == 4) spr.print(dataDemo() ? "  on" : "  off");
+    if (i == 4) spr.print(dataDemo() ? " on" : " off");
   }
+  spr.setTextSize(1);
   drawMenuHints(p, mx, mw, my + mh - 12);
 }
 
@@ -356,14 +362,14 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  _onUsb = powerStatus().usb;
+  rtcGetTime(&_clkTm);
+  rtcGetDate(&_clkDt);
 }
 
 static void clockUpdateOrient() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  imuRead(&ax, &ay, &az);
   uint8_t lock = settings().clockRot;
   if (lock == 1) { clockOrient = 0; return; }
   if (lock == 2) {
@@ -420,11 +426,11 @@ static void drawClock() {
     paintedOrient = 0;
     // Bottom half — buddy naturally lives at y=0..82, GIF peeks at top
     // via peek mode. Clearing from 90 leaves both untouched.
-    spr.fillRect(0, 90, W, H - 90, p.bg);
+    spr.fillRect(0, 110, W, H - 110, p.bg);
     spr.setTextDatum(MC_DATUM);
-    spr.setTextSize(4); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, CX, 140);
-    spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, CX, 175);
-    spr.setTextSize(1);                                     spr.drawString(dl, CX, 200);
+    spr.setTextSize(6); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, CX, 180);
+    spr.setTextSize(3); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, CX, 230);
+    spr.setTextSize(2);                                     spr.drawString(dl, CX, 268);
     spr.setTextDatum(TL_DATUM);
     return;
   }
@@ -432,10 +438,10 @@ static void drawClock() {
   // Landscape: 240×135 direct-to-LCD. Full fill only on entry; after that
   // text glyph bg cells repaint themselves and the pet box (small, ~90×50)
   // gets a fillRect each pet tick — small enough not to tear.
-  M5.Lcd.setRotation(clockOrient);
+  tft.setRotation(clockOrient);
   static uint8_t lastSec = 0xFF;
   bool repaint = paintedOrient != clockOrient;
-  if (repaint) { M5.Lcd.fillScreen(p.bg); paintedOrient = clockOrient; lastSec = 0xFF; }
+  if (repaint) { tft.fillScreen(p.bg); paintedOrient = clockOrient; lastSec = 0xFF; }
 
   // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
   // for nothing. Gate on the second changing (or full repaint).
@@ -443,12 +449,12 @@ static void drawClock() {
     lastSec = _clkTm.Seconds;
     char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
     char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.Seconds);
-    M5.Lcd.setTextDatum(MC_DATUM);
-    M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
-    M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
-                                                                  M5.Lcd.drawString(wdl, 170, 102);
-    M5.Lcd.setTextDatum(TL_DATUM);
-    M5.Lcd.setTextSize(1);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextSize(3); tft.setTextColor(p.text, p.bg);    tft.drawString(hm, 170, 42);
+    tft.setTextSize(2); tft.setTextColor(p.textDim, p.bg); tft.drawString(ssl, 170, 72);
+                                                                  tft.drawString(wdl, 170, 102);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextSize(1);
   }
 
   // Pet on left at 5 fps. Clear includes the overlay-particle zone above
@@ -462,18 +468,18 @@ static void drawClock() {
       // hardcode BUDDY_X_CENTER=67 / BUDDY_Y_OVERLAY=6 for particles so
       // keep portrait coords and just swap the surface — pet lands
       // upper-left of landscape, which is where we want it anyway.
-      M5.Lcd.fillRect(0, 0, 115, 90, p.bg);
-      buddyRenderTo(&M5.Lcd, activeState);
+      tft.fillRect(0, 0, 115, 90, p.bg);
+      buddyRenderTo(&tft, activeState);
     } else {
       // Full-frame GIFs paint every pixel (transparent → pal.bg), so a
       // per-tick clear just adds a visible black flash between wipe and
       // last scanline. The entry fillScreen on paintedOrient change
       // already covers the surround.
       characterSetState(activeState);
-      characterRenderTo(&M5.Lcd, 57, 45);
+      characterRenderTo(&tft, 57, 45);
     }
   }
-  M5.Lcd.setRotation(0);
+  tft.setRotation(0);
 }
 
 PersonaState derive(const TamaState& s) {
@@ -491,7 +497,7 @@ void triggerOneShot(PersonaState s, uint32_t durMs) {
 
 bool checkShake() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  imuRead(&ax, &ay, &az);
   float mag = sqrtf(ax*ax + ay*ay + az*az);
   float delta = fabsf(mag - accelBaseline);
   accelBaseline = accelBaseline * 0.95f + mag * 0.05f;
@@ -518,20 +524,20 @@ static void _infoHeader(const Palette& p, int& y, const char* section, uint8_t p
 void drawPasskey() {
   const Palette& p = characterPalette();
   spr.fillSprite(p.bg);
-  spr.setTextSize(1);
+  spr.setTextSize(2);
   spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(8, 56);  spr.print("BLUETOOTH PAIRING");
-  spr.setCursor(8, 184); spr.print("enter on desktop:");
-  spr.setTextSize(3);
+  spr.setCursor(8, 80);  spr.print("BLUETOOTH PAIRING");
+  spr.setCursor(8, 260); spr.print("enter on desktop:");
+  spr.setTextSize(5);
   spr.setTextColor(p.text, p.bg);
   char b[8]; snprintf(b, sizeof(b), "%06lu", (unsigned long)blePasskey());
-  spr.setCursor((W - 18 * 6) / 2, 110);
+  spr.setCursor((W - 30 * 6) / 2, 150);
   spr.print(b);
 }
 
 void drawInfo() {
   const Palette& p = characterPalette();
-  const int TOP = 70;
+  const int TOP = 100;
   spr.fillRect(0, TOP, W, H - TOP, p.bg);
   spr.setTextSize(1);
   int y = TOP + 2;
@@ -561,18 +567,18 @@ void drawInfo() {
     ln("> ascii pet to cycle.");
 
   } else if (infoPage == 1) {
-    _infoHeader(p, y, "BUTTONS", infoPage);
-    spr.setTextColor(p.text, p.bg);    ln("A   front");
-    spr.setTextColor(p.textDim, p.bg); ln("    next screen");
-    ln("    approve prompt"); y += 4;
-    spr.setTextColor(p.text, p.bg);    ln("B   right side");
-    spr.setTextColor(p.textDim, p.bg); ln("    next page");
-    ln("    deny prompt"); y += 4;
+    _infoHeader(p, y, "TOUCH ZONES", infoPage);
+    spr.setTextColor(p.text, p.bg);    ln("A  bottom-right");
+    spr.setTextColor(p.textDim, p.bg); ln("   next screen");
+    ln("   approve prompt"); y += 4;
+    spr.setTextColor(p.text, p.bg);    ln("B  bottom-left");
+    spr.setTextColor(p.textDim, p.bg); ln("   next page");
+    ln("   deny prompt"); y += 4;
     spr.setTextColor(p.text, p.bg);    ln("hold A");
-    spr.setTextColor(p.textDim, p.bg); ln("    menu"); y += 4;
-    spr.setTextColor(p.text, p.bg);    ln("Power  left side");
-    spr.setTextColor(p.textDim, p.bg); ln("    tap = screen off");
-    ln("    hold 6s = off");
+    spr.setTextColor(p.textDim, p.bg); ln("   menu"); y += 4;
+    spr.setTextColor(p.text, p.bg);    ln("top-right corner");
+    spr.setTextColor(p.textDim, p.bg); ln("   tap = screen sleep");
+    ln("   any tap to wake");
 
   } else if (infoPage == 2) {
     _infoHeader(p, y, "CLAUDE", infoPage);
@@ -593,30 +599,17 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    bool usb = vBus_mV > 4000;
-    bool charging = usb && iBat_mA > 1;
-    bool full = usb && vBat_mV > 4100 && iBat_mA < 10;
-
+    // CYD has no battery / fuel-gauge / temp sensor. Show what we actually
+    // have: uptime, heap, brightness, BT state, and a "running on USB" line.
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
     spr.setCursor(4, y);
-    spr.printf("%d%%", pct);
+    spr.print("USB");
     spr.setTextSize(1);
-    spr.setTextColor(full ? GREEN : (charging ? HOT : p.textDim), p.bg);
+    spr.setTextColor(TFT_GREEN, p.bg);
     spr.setCursor(60, y + 4);
-    spr.print(full ? "full" : (charging ? "charging" : (usb ? "usb" : "battery")));
+    spr.print("powered");
     y += 20;
-
-    spr.setTextColor(p.textDim, p.bg);
-    ln("  battery  %d.%02dV", vBat_mV/1000, (vBat_mV%1000)/10);
-    ln("  current  %+dmA", iBat_mA);
-    if (usb) ln("  usb in   %d.%02dV", vBus_mV/1000, (vBus_mV%1000)/10);
-    y += 8;
 
     spr.setTextColor(p.text, p.bg);
     ln("SYSTEM");
@@ -627,13 +620,12 @@ void drawInfo() {
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
     bool linked = settings().bt && dataBtActive();
 
-    spr.setTextColor(linked ? GREEN : (settings().bt ? HOT : p.textDim), p.bg);
+    spr.setTextColor(linked ? TFT_GREEN : (settings().bt ? HOT : p.textDim), p.bg);
     spr.setTextSize(2);
     spr.setCursor(4, y);
     spr.print(linked ? "linked" : (settings().bt ? "discover" : "off"));
@@ -682,15 +674,15 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
-    ln("M5StickC Plus");
-    ln("ESP32 + AXP192");
+    ln("CYD ESP32-2432S028R");
+    ln("ESP32-D0WD-V3");
   }
 }
 
 
 // Greedy word-wrap into fixed-width rows. Continuation rows get a leading
 // space. Returns number of rows written.
-static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t width) {
+static uint8_t wrapInto(const char* in, char out[][48], uint8_t maxRows, uint8_t width) {
   uint8_t row = 0, col = 0;
   const char* p = in;
   while (*p && row < maxRows) {
@@ -724,7 +716,7 @@ static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t
 
 static void drawApproval() {
   const Palette& p = characterPalette();
-  const int AREA = 78;
+  const int AREA = 120;
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
   spr.drawFastHLine(0, H - AREA, W, p.textDim);
 
@@ -735,35 +727,49 @@ static void drawApproval() {
   if (waited >= 10) spr.setTextColor(HOT, p.bg);
   spr.printf("approve? %lus", (unsigned long)waited);
 
-  // Size 2 only if it fits one line (~10 chars at 12px on 135px screen)
+  // Tool name at size 3 if it fits one line (~13 chars at 18px on 240 wide); else size 2.
   int toolLen = strlen(tama.promptTool);
   spr.setTextColor(p.text, p.bg);
-  spr.setTextSize(toolLen <= 10 ? 2 : 1);
-  spr.setCursor(4, H - AREA + (toolLen <= 10 ? 14 : 18));
+  spr.setTextSize(toolLen <= 13 ? 3 : 2);
+  spr.setCursor(4, H - AREA + 18);
   spr.print(tama.promptTool);
   spr.setTextSize(1);
 
-  // Hint wraps at ~21 chars to two lines under the tool name
+  // Hint wraps at ~40 chars to two lines under the tool name.
   spr.setTextColor(p.textDim, p.bg);
   int hlen = strlen(tama.promptHint);
-  spr.setCursor(4, H - AREA + 34);
-  spr.printf("%.21s", tama.promptHint);
-  if (hlen > 21) {
-    spr.setCursor(4, H - AREA + 42);
-    spr.printf("%.21s", tama.promptHint + 21);
+  spr.setCursor(4, H - AREA + 56);
+  spr.printf("%.40s", tama.promptHint);
+  if (hlen > 40) {
+    spr.setCursor(4, H - AREA + 66);
+    spr.printf("%.40s", tama.promptHint + 40);
   }
 
   if (responseSent) {
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(4, H - 12);
-    spr.print("sent...");
+    spr.setTextDatum(MC_DATUM);
+    spr.setTextSize(2);
+    spr.drawString("sent…", W / 2, H - 16);
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextSize(1);
   } else {
-    spr.setTextColor(GREEN, p.bg);
-    spr.setCursor(4, H - 12);
-    spr.print("A: approve");
-    spr.setTextColor(HOT, p.bg);
-    spr.setCursor(W - 48, H - 12);
-    spr.print("B: deny");
+    // Colored button blocks aligned with the touch zones in hal/input.cpp:
+    // bottom-LEFT half = inputB (deny), bottom-RIGHT half = inputA (approve).
+    // PORT.md §6. Filled rects give an unmissable visual target on the
+    // wider screen vs the M5StickC's tiny status-line labels.
+    int by = H - 40;
+    int bh = 34;
+    int bw = (W - 12) / 2;
+    spr.fillRoundRect(4,            by, bw, bh, 8, HOT);
+    spr.fillRoundRect(W - 4 - bw,   by, bw, bh, 8, TFT_GREEN);
+    spr.setTextDatum(MC_DATUM);
+    spr.setTextSize(2);
+    spr.setTextColor(0xFFFF, HOT);
+    spr.drawString("DENY",   4 + bw / 2,       by + bh / 2);
+    spr.setTextColor(0xFFFF, TFT_GREEN);
+    spr.drawString("APPROVE", W - 4 - bw / 2,  by + bh / 2);
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextSize(1);
   }
 }
 
@@ -781,7 +787,7 @@ static void tinyHeart(int x, int y, bool filled, uint16_t col) {
 }
 
 static void drawPetStats(const Palette& p) {
-  const int TOP = 70;
+  const int TOP = 100;
   spr.fillRect(0, TOP, W, H - TOP, p.bg);
   spr.setTextSize(1);
   int y = TOP + 16;
@@ -789,7 +795,7 @@ static void drawPetStats(const Palette& p) {
   spr.setTextColor(p.textDim, p.bg);
   spr.setCursor(6, y - 2); spr.print("mood");
   uint8_t mood = statsMoodTier();
-  uint16_t moodCol = (mood >= 3) ? RED : (mood >= 2) ? HOT : p.textDim;
+  uint16_t moodCol = (mood >= 3) ? TFT_RED : (mood >= 2) ? HOT : p.textDim;
   for (int i = 0; i < 4; i++) tinyHeart(54 + i * 16, y + 2, i < mood, moodCol);
 
   y += 20;
@@ -890,7 +896,7 @@ void drawPet() {
 void drawHUD() {
   if (tama.promptId[0]) { drawApproval(); return; }
   const Palette& p = characterPalette();
-  const int SHOW = 3, LH = 8, WIDTH = 21;
+  const int SHOW = 4, LH = 16, WIDTH = 40;
   const int AREA = SHOW * LH + 4;
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
   spr.setTextSize(1);
@@ -906,7 +912,7 @@ void drawHUD() {
 
   // Wrap all transcript lines into a flat display buffer. Track which
   // transcript index each display row came from, so we can dim older ones.
-  static char disp[32][24];
+  static char disp[32][48];
   static uint8_t srcOf[32];
   uint8_t nDisp = 0;
   for (uint8_t i = 0; i < tama.nLines && nDisp < 32; i++) {
@@ -936,13 +942,16 @@ void drawHUD() {
 }
 
 void setup() {
-  M5.begin();
-  M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  Serial.begin(115200);           // M5.begin() used to do this; HAL leaves it explicit
+  delay(100);
+  boardBegin();
+  powerBegin();
+  ledBegin();
+  audioBegin();
+  imuBegin();
+  rtcBegin();
   startBt();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
+  ledSet(0, 0, 0);                // off
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
@@ -951,6 +960,11 @@ void setup() {
   buddyInit();
 
   // BLE stays always-on; s.bt is stored as a preference only.
+  tft.fillScreen(TFT_BLACK);
+  // 8bpp sprite: 240*320=76800 bytes vs 153600 at 16bpp. CYD standard
+  // variant has no PSRAM and the internal heap can't fit a 16bpp
+  // full-screen sprite after BLE + LittleFS + buddy state.
+  spr.setColorDepth(8);
   spr.createSprite(W, H);
   characterInit(nullptr);  // scan /characters/ for whatever is installed
   gifAvailable = characterLoaded();
@@ -980,14 +994,15 @@ void setup() {
     spr.setTextDatum(TL_DATUM); spr.setTextSize(1);
     spr.pushSprite(0, 0);
     delay(1800);
+    spr.fillSprite(p.bg);    // clear splash before loop renders pet
+    spr.pushSprite(0, 0);
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
 }
 
 void loop() {
-  M5.update();
-  M5.Beep.update();
+  boardLoop();                    // polls touch, ticks audio auto-stop + rtc save
   t++;
   uint32_t now = millis();
 
@@ -1001,11 +1016,11 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
-  // LED: pulse on attention, otherwise off
+  // LED: red pulse on attention, otherwise off
   if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
+    ledSet((now / 400) % 2 ? 255 : 0, 0, 0);
   } else {
-    digitalWrite(LED_PIN, HIGH);
+    ledSet(0, 0, 0);
   }
 
   // shake → dizzy + force scenario advance
@@ -1043,26 +1058,25 @@ void loop() {
   // Button-press wake. Track which button woke the screen so its full
   // press cycle (including long-press) is swallowed — you don't want
   // BtnA-to-wake to also cycle displayMode or open the menu.
-  if (M5.BtnA.isPressed() || M5.BtnB.isPressed()) {
+  if (inputA.isPressed() || inputB.isPressed()) {
     if (screenOff) {
-      if (M5.BtnA.isPressed()) swallowBtnA = true;
-      if (M5.BtnB.isPressed()) swallowBtnB = true;
+      if (inputA.isPressed()) swallowBtnA = true;
+      if (inputB.isPressed()) swallowBtnB = true;
     }
     wake();
   }
 
-  // AXP power button (left side): short-press toggles screen off.
-  // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  // Top-right-corner touch zone toggles screen sleep (replaces the M5.Axp
+  // short-press in the upstream firmware). Per PORT.md §6.
+  if (inputSleep.wasReleased()) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
-      screenOff = true;
+      powerScreen(false);
     }
   }
 
-  if (M5.BtnA.pressedFor(600) && !btnALong && !swallowBtnA) {
+  if (inputA.pressedFor(600) && !btnALong && !swallowBtnA) {
     btnALong = true;
     beep(800, 60);
     if (resetOpen) { resetOpen = false; }
@@ -1074,7 +1088,7 @@ void loop() {
     }
     Serial.println(menuOpen ? "menu open" : "menu close");
   }
-  if (M5.BtnA.wasReleased()) {
+  if (inputA.wasReleased()) {
     if (!btnALong && !swallowBtnA) {
       if (inPrompt) {
         char cmd[96];
@@ -1106,7 +1120,7 @@ void loop() {
   }
 
   // BtnB: pet → heart
-  if (M5.BtnB.wasPressed()) {
+  if (inputB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
     else
     if (inPrompt) {
@@ -1243,7 +1257,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    powerBacklight(8);
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1257,7 +1271,7 @@ void loop() {
   // No auto-off on USB power — clock face wants to stay visible while charging.
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+    powerScreen(false);
     screenOff = true;
   }
 
