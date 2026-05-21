@@ -23,9 +23,8 @@ waiting, and lets you approve or deny right from the device.
 ## Hardware
 
 The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+depends on the M5Unified library for its display, IMU, and button
+drivers—so it works with M5StickC Plus, and M5StickS3 out of the box.
 
 ## Flashing
 

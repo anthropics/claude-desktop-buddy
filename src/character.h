@@ -24,7 +24,7 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // header strip; off renders full-size centered in the upper home area.
 // Adaptive to actual canvas height — no padding required in source art.
 void characterSetPeek(bool peek);
-class TFT_eSPI;
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
+namespace lgfx { inline namespace v1 { class LGFXBase; } }
+void characterRenderTo(lgfx::v1::LGFXBase* tgt, int cx, int cy);
 
 const Palette& characterPalette();
