@@ -1,10 +1,10 @@
 #include "character.h"
-#include <M5StickCPlus.h>
+#include <M5StickCPlus2.h>
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
 
-extern TFT_eSprite spr;
+extern LGFX_Sprite spr;
 
 static const char* STATE_NAMES[] = {
   "sleep", "idle", "busy", "attention", "celebrate", "dizzy", "heart"
@@ -43,8 +43,8 @@ static int         gifX = 0, gifY = 0, gifW = 0, gifH = 0;
 static const int   PEEK_TOP = 70;
 static bool        peekMode = false;
 // Draw target — defaults to the sprite; characterRenderTo() retargets to
-// M5.Lcd for the landscape clock (both inherit TFT_eSPI).
-static TFT_eSPI*   _tgt = &spr;
+// M5.Lcd for the landscape clock (both inherit lgfx::LovyanGFX).
+static lgfx::LovyanGFX*   _tgt = &spr;
 // Peek mode renders at half scale (2:1 nearest-neighbor in gifDrawCb) so
 // the whole pet fits the 70px window instead of cropping the top.
 static void gifPlace() {
@@ -250,9 +250,9 @@ const Palette& characterPalette() { return pal; }
 // One-shot half-scale render to an arbitrary surface (M5.Lcd for the
 // landscape clock). Caller owns clearing. Advances frame timing so
 // animation runs even when characterTick() is bypassed.
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
+void characterRenderTo(lgfx::LovyanGFX* tgt, int cx, int cy) {
   if (!gifOpen) return;   // caller opens via characterSetState(activeState)
-  TFT_eSPI* prevT = _tgt; bool prevP = peekMode; int px = gifX, py = gifY;
+  lgfx::LovyanGFX* prevT = _tgt; bool prevP = peekMode; int px = gifX, py = gifY;
   _tgt = tgt; peekMode = true;
   gifX = cx - gifW / 4;
   gifY = cy - gifH / 4;
