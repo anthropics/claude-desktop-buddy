@@ -1038,6 +1038,15 @@ void loop() {
     }
   }
 
+  // Clear prompts that have been pending too long. The desktop that sent
+  // this likely went offline without clearing it; 5 minutes is long enough
+  // to step away and come back without losing a legitimate prompt.
+  static const uint32_t PROMPT_TIMEOUT_MS = 5UL * 60UL * 1000UL;
+  if (tama.promptId[0] && !responseSent
+      && (millis() - promptArrivedMs) > PROMPT_TIMEOUT_MS) {
+    tama.promptId[0] = 0;
+  }
+
   bool inPrompt = tama.promptId[0] && !responseSent;
 
   // Button-press wake. Track which button woke the screen so its full

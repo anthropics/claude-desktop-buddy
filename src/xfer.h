@@ -97,7 +97,7 @@ inline bool xferCommand(JsonDocument& doc) {
   }
 
   if (strcmp(cmd, "unpair") == 0) {
-    bleClearBonds();
+    bleRemoveCurrentBond();
     _xAck("unpair", true);
     return true;
   }

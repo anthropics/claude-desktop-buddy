@@ -30,6 +30,12 @@ static volatile bool      secure = false;
 static volatile uint32_t  passkey = 0;
 static volatile uint16_t  mtu = 23;
 
+// BD address of the currently connected peer. Set on connect, cleared on
+// disconnect. Used by bleRemoveCurrentBond() so "unpair" only removes the
+// host that sent the command rather than wiping all stored bonds.
+static esp_bd_addr_t      peerAddr;
+static volatile bool      hasPeer = false;
+
 static void rxPush(const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
     size_t next = (rxHead + 1) % RX_CAP;
@@ -47,15 +53,21 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 };
 
 class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* s) override {
+  // Use the extended overload to capture the peer BD address.
+  void onConnect(BLEServer* s, esp_ble_gatts_cb_param_t* param) override {
     connected = true;
-    Serial.println("[ble] connected");
+    memcpy((void*)peerAddr, param->connect.remote_bda, sizeof(esp_bd_addr_t));
+    hasPeer = true;
+    Serial.printf("[ble] connected %02x:%02x:%02x:%02x:%02x:%02x\n",
+      peerAddr[0], peerAddr[1], peerAddr[2],
+      peerAddr[3], peerAddr[4], peerAddr[5]);
   }
   void onDisconnect(BLEServer* s) override {
     connected = false;
     secure = false;
     passkey = 0;
     mtu = 23;
+    hasPeer = false;
     Serial.println("[ble] disconnected");
     // Restart advertising so the next client can find us.
     BLEDevice::startAdvertising();
@@ -136,6 +148,17 @@ void bleInit(const char* deviceName) {
 bool bleConnected() { return connected; }
 bool bleSecure()    { return secure; }
 uint32_t blePasskey() { return passkey; }
+
+void bleRemoveCurrentBond() {
+  if (!hasPeer) {
+    Serial.println("[ble] unpair: no peer to remove");
+    return;
+  }
+  esp_ble_remove_bond_device(peerAddr);
+  Serial.printf("[ble] removed bond %02x:%02x:%02x:%02x:%02x:%02x\n",
+    peerAddr[0], peerAddr[1], peerAddr[2],
+    peerAddr[3], peerAddr[4], peerAddr[5]);
+}
 
 void bleClearBonds() {
   int n = esp_ble_get_bond_device_num();
