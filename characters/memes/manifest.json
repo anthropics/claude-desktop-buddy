@@ -1,0 +1,17 @@
+{
+  "name": "memes",
+  "colors": {
+    "bg": "#000000",
+    "text": "#FFFFFF",
+    "textDim": "#808080"
+  },
+  "states": {
+    "sleep": "sleep.gif",
+    "idle": "idle.gif",
+    "busy": "busy.gif",
+    "attention": "attention.gif",
+    "celebrate": "celebrate.gif",
+    "dizzy": "dizzy.gif",
+    "heart": "heart.gif"
+  }
+}

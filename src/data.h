@@ -15,7 +15,7 @@ struct TamaState {
   bool     connected;
   char     lines[8][92];
   uint8_t  nLines;
-  uint16_t lineGen;          // bumps when lines change — lets UI reset scroll
+  uint16_t lineGen;          // bumps when lines change — UI uses to detect updates
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
   char     promptHint[44];

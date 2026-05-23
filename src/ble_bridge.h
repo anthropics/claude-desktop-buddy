@@ -24,8 +24,11 @@ bool bleSecure();
 // Non-zero while a 6-digit pairing passkey should be on screen. main.cpp
 // renders it; cleared automatically on auth complete or disconnect.
 uint32_t blePasskey();
-// Erase all stored bonds (LTKs) from NVS. Called from the "unpair" cmd
-// and from factory reset.
+// Remove only the bond for the currently connected peer. Called from the
+// "unpair" JSON command so a desktop can unpair itself without affecting
+// bonds held by other hosts.
+void bleRemoveCurrentBond();
+// Erase ALL stored bonds from NVS. Called only from factory reset.
 void bleClearBonds();
 size_t bleAvailable();
 int bleRead();
