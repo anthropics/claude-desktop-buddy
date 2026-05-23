@@ -803,7 +803,7 @@ static void drawPetStats(const Palette& p) {
 
   y += 20;
   spr.setCursor(6, y - 2); spr.print("energy");
-  uint8_t en = statsEnergyTier();
+  uint8_t en = statsEnergyTier(_onUsb);
   uint16_t enCol = (en >= 4) ? 0x07FF : (en >= 2) ? 0xFFE0 : HOT;
   for (int i = 0; i < 5; i++) {
     int px = 54 + i * 13;

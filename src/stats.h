@@ -158,15 +158,18 @@ inline uint8_t statsMoodTier() {
 }
 
 // Energy: starts at 3/5 on boot, tops up to full on nap end, drains 1 tier per 2h.
+// When on USB power the floor is 1 so the pet never shows fully depleted while charging.
 static uint32_t _lastNapEndMs = 0;
 static uint8_t  _energyAtNap  = 3;
 
 inline void statsOnWake() { _lastNapEndMs = millis(); _energyAtNap = 5; }
 
-inline uint8_t statsEnergyTier() {
+inline uint8_t statsEnergyTier(bool onUsb = false) {
   uint32_t hoursSince = (millis() - _lastNapEndMs) / 3600000;
   int8_t e = (int8_t)_energyAtNap - (int8_t)(hoursSince / 2);
-  if (e < 0) e = 0; if (e > 5) e = 5;
+  int8_t minEnergy = onUsb ? 1 : 0;
+  if (e < minEnergy) e = minEnergy;
+  if (e > 5) e = 5;
   return (uint8_t)e;
 }
 
