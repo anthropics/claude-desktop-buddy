@@ -97,7 +97,7 @@ inline bool xferCommand(JsonDocument& doc) {
   }
 
   if (strcmp(cmd, "unpair") == 0) {
-    bleClearBonds();
+    bleRemoveCurrentBond();
     _xAck("unpair", true);
     return true;
   }
@@ -192,7 +192,10 @@ inline bool xferCommand(JsonDocument& doc) {
     _xExpected = doc["size"] | 0;
     _xWritten = 0;
     if (!path) { _xAck("file", false); return true; }
-    char full[80]; snprintf(full, sizeof(full), "/characters/%s/%s", _xCharName, path);
+    char full[80];
+    if (snprintf(full, sizeof(full), "/characters/%s/%s", _xCharName, path) >= (int)sizeof(full)) {
+      _xAck("file", false); return true;  // path too long — would overflow buffer
+    }
     _xFile = LittleFS.open(full, "w");
     _xAck("file", (bool)_xFile);
     return true;
