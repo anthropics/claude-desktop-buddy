@@ -174,8 +174,10 @@ inline void dataPoll(TamaState* out) {
     }
   }
 
+  bool wasConnected = out->connected;
   out->connected = dataConnected();
   if (!out->connected) {
+    if (wasConnected) _rtcValid = false;  // force re-sync on next connection
     out->sessionsTotal=0; out->sessionsRunning=0; out->sessionsWaiting=0;
     out->recentlyCompleted=false; out->lastUpdated=now;
     strncpy(out->msg, "No Claude connected", sizeof(out->msg)-1);
