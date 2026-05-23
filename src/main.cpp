@@ -43,7 +43,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+// brightness level stored in settings().bright (0..4 → ScreenBreath 20..100)
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -94,7 +94,7 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() { M5.Axp.ScreenBreath(20 + settings().bright * 20); }
 
 static void wake() {
   lastInteractMs = millis();
@@ -153,8 +153,9 @@ static void applySetting(uint8_t idx) {
   Settings& s = settings();
   switch (idx) {
     case 0:
-      brightLevel = (brightLevel + 1) % 5;
+      settings().bright = (settings().bright + 1) % 5;
       applyBrightness();
+      settingsSave();
       return;
     case 1: s.sound = !s.sound; break;
     case 2:
@@ -266,7 +267,7 @@ static void drawSettings() {
     spr.setCursor(mx + mw - 36, my + 8 + i * 14);
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
-      spr.printf("%u/4", brightLevel);
+      spr.printf("%u/4", settings().bright);
     } else if (i >= 1 && i <= 5) {
       spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
       spr.print(vals[i-1] ? " on" : "off");
@@ -625,7 +626,7 @@ void drawInfo() {
     uint32_t up = millis() / 1000;
     ln("  uptime   %luh %02lum", up / 3600, (up / 60) % 60);
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
-    ln("  bright   %u/4", brightLevel);
+    ln("  bright   %u/4", settings().bright);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
     ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
 
@@ -943,10 +944,10 @@ void setup() {
   startBt();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);   // off
+  settingsLoad();
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
-  settingsLoad();
   petNameLoad();
   buddyInit();
 
