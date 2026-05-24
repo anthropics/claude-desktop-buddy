@@ -156,6 +156,16 @@ populate the Hardware Buddy window's stats panel:
 
 You can omit fields you don't have. `bat.mA` negative means charging.
 
+`stats` fields:
+
+| Field   | Meaning                                          |
+| ------- | ------------------------------------------------ |
+| `appr`  | Lifetime permission approvals                    |
+| `deny`  | Lifetime permission denials                      |
+| `vel`   | Median response velocity (tokens/s, rolling)     |
+| `nap`   | Total seconds spent in nap (face-down) mode      |
+| `lvl`   | Current level (increments every 50 K tokens)     |
+
 ## Folder push
 
 The Hardware Buddy window has a drop target. Dropping a folder there streams
