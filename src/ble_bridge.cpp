@@ -17,10 +17,15 @@
 // Incoming bytes are buffered in a simple ring for bleRead()/bleAvailable().
 // Sized to hold a transcript snapshot JSON plus headroom; the GATT layer
 // will flow-control if we fall behind.
+//
+// rxPush runs in the BLE stack task (Core 0); bleRead/bleAvailable run in the
+// main loop (Core 1). volatile alone is not sufficient on dual-core ESP32 —
+// use a portMUX spinlock to prevent torn head/tail reads.
 static const size_t RX_CAP = 2048;
 static uint8_t  rxBuf[RX_CAP];
-static volatile size_t rxHead = 0;
-static volatile size_t rxTail = 0;
+static size_t   rxHead = 0;
+static size_t   rxTail = 0;
+static portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
 
 static BLEServer*         server = nullptr;
 static BLECharacteristic* txChar = nullptr;
@@ -31,12 +36,14 @@ static volatile uint32_t  passkey = 0;
 static volatile uint16_t  mtu = 23;
 
 static void rxPush(const uint8_t* p, size_t n) {
+  portENTER_CRITICAL(&rxMux);
   for (size_t i = 0; i < n; i++) {
     size_t next = (rxHead + 1) % RX_CAP;
-    if (next == rxTail) return;  // full — drop (upstream should keep up)
+    if (next == rxTail) break;  // full — drop tail, keep whatever fits
     rxBuf[rxHead] = p[i];
     rxHead = next;
   }
+  portEXIT_CRITICAL(&rxMux);
 }
 
 class RxCallbacks : public BLECharacteristicCallbacks {
@@ -149,13 +156,18 @@ void bleClearBonds() {
 }
 
 size_t bleAvailable() {
-  return (rxHead + RX_CAP - rxTail) % RX_CAP;
+  portENTER_CRITICAL(&rxMux);
+  size_t n = (rxHead + RX_CAP - rxTail) % RX_CAP;
+  portEXIT_CRITICAL(&rxMux);
+  return n;
 }
 
 int bleRead() {
-  if (rxHead == rxTail) return -1;
+  portENTER_CRITICAL(&rxMux);
+  if (rxHead == rxTail) { portEXIT_CRITICAL(&rxMux); return -1; }
   int b = rxBuf[rxTail];
   rxTail = (rxTail + 1) % RX_CAP;
+  portEXIT_CRITICAL(&rxMux);
   return b;
 }
 
