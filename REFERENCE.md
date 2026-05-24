@@ -65,10 +65,16 @@ a keepalive every 10 seconds:
 | `running`      | Sessions actively generating                                                      |
 | `waiting`      | Sessions blocked on a permission prompt                                           |
 | `msg`          | One-line summary suitable for a small display                                     |
-| `entries`      | Recent transcript lines, newest first (capped to a few)                           |
+| `entries`      | Recent transcript lines, oldest first (index 0 = oldest, last = newest)           |
 | `tokens`       | Cumulative output tokens since the desktop app started                            |
 | `tokens_today` | Output tokens since local midnight (persisted, survives restart)                  |
 | `prompt`       | Only present when a permission decision is needed. The `id` is what you echo back |
+
+**Entry ordering note:** `entries` is oldest-first — `entries[0]` is the oldest
+line and `entries[last]` is the most recent. The reference firmware renders the
+last entry as the freshest line in the HUD. Keep entries to 8 or fewer; the
+reference firmware silently drops any beyond its buffer size, so your newest
+entries would be lost if you send more than the firmware can hold.
 
 A few useful derived signals: `running > 0` means at least one session is
 actively generating, `waiting > 0` means a permission prompt is blocking,

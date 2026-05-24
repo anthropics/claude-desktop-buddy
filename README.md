@@ -1,4 +1,9 @@
-# claude-desktop-buddy
+# claude-desktop-buddy (community fork)
+
+> **This is a community-maintained fork** of [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
+> It adds features and improvements that are outside the scope of the upstream reference implementation.
+> Bug fixes are submitted upstream; everything else lives here.
+> Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Claude for macOS and Windows can connect Claude Cowork and Claude Code to
 maker devices over BLE, so developers and makers can build hardware that
@@ -148,6 +153,23 @@ If you're iterating on a character and would rather skip the BLE round-trip,
 | `celebrate` | level up (every 50K tokens) | confetti, bouncing          |
 | `dizzy`     | you shook the stick         | spiral eyes, wobbling       |
 | `heart`     | approved in under 5s        | floating hearts             |
+
+## What's different from upstream
+
+| Area | Change |
+| ---- | ------ |
+| Settings | Descriptor-table driven — adding a new bool setting is one line |
+| Settings | Badge, velocity display, countdown, vibrate, vib denial toggles |
+| UI | BT/USB connection badge in transcript corner |
+| UI | Remaining-time countdown on approval prompt |
+| UI | Median response time on pet stats page |
+| UI | Transcript buffer doubled to 16 entries |
+| Haptics | Optional Vibrator HAT support with four distinct patterns |
+| Tests | Host-side Unity unit tests for stats.h pure logic (run via WSL) |
+
+Upstream bug fixes (brightness persist, stats overflow, scroll preserve,
+approval timeout, energy floor, RTC clear, path overflow, multi-host bonding)
+are submitted to the upstream repo and will be pulled into this fork once merged.
 
 ## Project layout
 

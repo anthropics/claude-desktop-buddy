@@ -1,31 +1,41 @@
 # Contributing
 
-The best contribution is a fork.
+This is a community fork of [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
+Unlike the upstream repo, this fork actively accepts new features, improvements,
+and ports — if it makes the buddy better and doesn't break the reference behaviour,
+it's welcome here.
 
-This repo is a reference implementation — a worked example of one device
-that speaks the BLE protocol described in [REFERENCE.md](REFERENCE.md).
-It's not an actively maintained project, and we'd rather you build the
-thing _you_ want than bend this one into it.
+## What we'll take
 
-## So what should I do instead?
+- **Bug fixes** — anything that makes the device behave incorrectly
+- **New features** — new UI, new settings, new hardware support
+- **Ports** — other boards that speak the same BLE protocol
+- **Refactors** — as long as they improve maintainability without changing behaviour
+- **Tests** — host-side unit tests for pure logic are especially welcome
 
-**Fork it and make it yours.** Swap the M5Stick for a Pi Pico W. Replace
-the ASCII pets with an e-ink panel. Put it in a 3D-printed shell. Rip
-out everything but `ble_bridge.cpp` and the JSON parser. The protocol is
-the stable surface — `REFERENCE.md` is the contract, this firmware is
-just one way to honor it.
+If your change also qualifies under the upstream
+[CONTRIBUTING.md](https://github.com/anthropics/claude-desktop-buddy/blob/main/CONTRIBUTING.md)
+(protocol corrections, boot-blocking bugs), please raise it there too.
 
-## What we will take
+## How to contribute
 
-- Corrections to `REFERENCE.md` if the protocol docs are wrong or
-  unclear
-- Fixes for bugs that make the reference _not work as a reference_ —
-  i.e., it doesn't pair, doesn't render, crashes on boot
+1. Fork this repo and create a branch from `main`
+2. Keep each PR focused on one logical change
+3. For new settings: add a single entry to `BOOL_SETTINGS[]` in `stats.h` — load, save, and menu rendering are automatic
+4. For new hardware: swap the M5Stick drivers, keep the BLE and stats layers unchanged
+5. Open a PR against `main` in this repo
 
-## What we won't take
+## Running tests
 
-- New features, new pets, new screens
-- Ports to other boards (fork!)
-- Refactors, style changes, dependency bumps
+The host-side unit tests in `test/test_stats/` cover the pure logic in `stats.h`
+and run without hardware via WSL GCC:
 
-If you're unsure which bucket something falls in, it's likely the second one.
+```bash
+# From the project root in WSL:
+g++ -std=c++14 -Itest/stubs -Isrc test/test_stats/test_main.cpp test/stubs/unity.c -o /tmp/test_stats && /tmp/test_stats
+```
+
+## Staying in sync with upstream
+
+This fork tracks upstream `main`. When upstream merges a fix, it will be pulled
+into this fork's `main` and the enhancement branches rebased on top.

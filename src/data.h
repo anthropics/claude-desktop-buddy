@@ -101,9 +101,13 @@ static void _applyJson(const char* line, TamaState* out) {
   if (m) { strncpy(out->msg, m, sizeof(out->msg)-1); out->msg[sizeof(out->msg)-1]=0; }
   JsonArray la = doc["entries"];
   if (!la.isNull()) {
+    // Entries are oldest-first; if more arrive than the buffer holds, skip the
+    // oldest so we always keep the newest entries (the ones shown in the HUD).
+    uint8_t total = (uint8_t)la.size();
+    uint8_t skip = total > 8 ? total - 8 : 0;
     uint8_t n = 0;
     for (JsonVariant v : la) {
-      if (n >= 8) break;
+      if (skip > 0) { skip--; continue; }
       const char* s = v.as<const char*>();
       strncpy(out->lines[n], s ? s : "", 91); out->lines[n][91]=0;
       n++;
