@@ -175,6 +175,38 @@ static void renderHeart(M5GFX_Sprite_t& spr, uint32_t t) {
   }
 }
 
+static void drawOverlay(M5GFX_Sprite_t& spr, const BuddyOverlay& o) {
+  if (o.debugActive) {
+    drawGlyph(spr, 300, 12, "DBG", greenIdx(0.7f), 1);
+    return;                       // counts suppressed in debug
+  }
+  spr.setTextDatum(top_left);
+  spr.setTextColor(greenIdx(1.0f));
+  // Left margin: running (top), waiting (below). Right margin: total.
+  spr.setTextSize(2);
+  spr.setCursor(6, 40);  spr.printf("%dR", o.running);
+  spr.setCursor(6, 90);  spr.printf("%dW", o.waiting);
+  spr.setCursor(258, 40); spr.printf("%d", o.total);
+  // Status msg: bottom strip, truncated to fit 320px (~52 chars at size 1).
+  if (o.statusMsg[0]) {
+    spr.setTextSize(1);
+    char buf[54]; strncpy(buf, o.statusMsg, 53); buf[53] = 0;
+    spr.setTextColor(greenIdx(0.5f));
+    spr.setCursor(6, 230); spr.print(buf);
+  }
+  // AUTO banner (top), drawn over everything when on.
+  if (o.autoOn) {
+    spr.fillRect(0, 0, 320, 16, gRed);
+    spr.setTextColor(gWhite); spr.setTextSize(1);
+    spr.setCursor(6, 4); spr.printf("AUTO ON  %d", o.autoCount);
+  }
+  // Transient auto-fired toast (bottom).
+  if (o.autoToast) {
+    spr.setTextColor(greenIdx(1.0f)); spr.setTextSize(1);
+    spr.setCursor(120, 230); spr.printf("Auto: %s (%d)", o.autoToolMsg, o.autoCount);
+  }
+}
+
 void buddyCoolSTick(M5GFX_Sprite_t& spr, PersonaState state, uint32_t tMs,
                     const BuddyOverlay& overlay) {
   spr.fillScreen(0);
@@ -188,4 +220,5 @@ void buddyCoolSTick(M5GFX_Sprite_t& spr, PersonaState state, uint32_t tMs,
     case PS_HEART:     renderHeart(spr, tMs);     break;
     default:           renderIdle(spr, tMs);      break;
   }
+  drawOverlay(spr, overlay);
 }
