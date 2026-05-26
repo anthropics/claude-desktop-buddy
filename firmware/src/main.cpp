@@ -42,10 +42,10 @@ static bool autoApprove       = false;
 static volatile bool pendingAutoSync = false;
 
 // Last-known status (for repaint after prompt clears or toast expires).
-static int lastRunning = 0, lastWaiting = 0, lastTotal = 0;
+static volatile int lastRunning = 0, lastWaiting = 0, lastTotal = 0;
 static char lastStatusMsg[64] = "idle";
-static int autoCount = 0;
-static unsigned long autoFlashUntil = 0;  // millis() deadline for green toast
+static volatile int autoCount = 0;
+static volatile unsigned long autoFlashUntil = 0;  // millis() deadline for green toast
 
 static M5GFX_Sprite_t buddySprite(&M5.Display);
 static BuddyDepth buddyDepth = DEPTH_8;
@@ -87,6 +87,8 @@ static AskQuestion askQs[4];
 static unsigned long btnAPressMs = 0;        // long-press tracking
 static unsigned long btnBPressMs = 0;
 static const unsigned long LONG_PRESS_MS = 800;
+static const unsigned long FRAME_MS = 33;     // ~30fps buddy frame interval
+static const unsigned long HEART_MS = 3000;   // heart-state hold after button approve
 
 // Forward declarations for functions called from RxCallbacks (defined later).
 static void sendNotify(const char* json);
@@ -635,7 +637,7 @@ void loop() {
       }
     }
   } else if (promptId[0] != 0 && M5.BtnA.wasPressed()) {
-    heartUntil = millis() + 3000;   // button approve -> heart (auto-allows don't)
+    heartUntil = millis() + HEART_MS;   // button approve -> heart (auto-allows don't)
     sendDecision("allow");
   } else if (promptId[0] != 0 && M5.BtnC.wasPressed()) {
     sendDecision("deny");
@@ -665,26 +667,35 @@ void loop() {
   // --- Buddy render (home screen only, ~30fps) ---------------------------
   if (buddyReady && askId[0] == 0 && promptId[0] == 0) {
     unsigned long now = millis();
+    static uint32_t shownPasskey = 0xFFFFFFFF;
     if (pairing) {
-      renderPasskey(passkeyVal);          // loop owns the passkey draw
-    } else if (now - lastFrameMs >= 33) {
-      lastFrameMs = now;
-      BuddyOverlay ov;
-      ov.running = lastRunning; ov.waiting = lastWaiting; ov.total = lastTotal;
-      portENTER_CRITICAL(&statusMux);
-      strlcpy(ov.statusMsg, lastStatusMsg, sizeof(ov.statusMsg));
-      portEXIT_CRITICAL(&statusMux);
-      ov.autoOn      = autoApprove;
-      ov.autoCount   = autoCount;
-      ov.autoToast   = (autoFlashUntil != 0 && now < autoFlashUntil);
-      strlcpy(ov.autoToolMsg, promptTool, sizeof(ov.autoToolMsg));
-      ov.debugActive = debugActive;
+      if (passkeyVal != shownPasskey) {     // draw once per pairing/passkey
+        renderPasskey(passkeyVal);
+        shownPasskey = passkeyVal;
+      }
+    } else {
+      shownPasskey = 0xFFFFFFFF;            // force redraw on next pairing entry
+      if (now - lastFrameMs >= FRAME_MS) {
+        lastFrameMs = now;
+        BuddyOverlay ov;
+        ov.running = lastRunning; ov.waiting = lastWaiting; ov.total = lastTotal;
+        portENTER_CRITICAL(&statusMux);
+        strlcpy(ov.statusMsg, lastStatusMsg, sizeof(ov.statusMsg));
+        portEXIT_CRITICAL(&statusMux);
+        ov.autoOn      = autoApprove;
+        ov.autoCount   = autoCount;
+        ov.autoToast   = (autoFlashUntil != 0 && now < autoFlashUntil);
+        // promptTool is read unlocked here; worst case a 1-frame torn toast label
+        // (cosmetic, self-heals next frame). Not worth widening the statusMux scope.
+        strlcpy(ov.autoToolMsg, promptTool, sizeof(ov.autoToolMsg));
+        ov.debugActive = debugActive;
 
-      PersonaInputs pin = { centralConnected, lastRunning, heartUntil, now,
-                            debugActive, debugState };
-      PersonaState  st  = derivePersonaState(pin);
-      buddyCoolSTick(buddySprite, st, now, ov);
-      buddySprite.pushSprite(0, 0);
+        PersonaInputs pin = { centralConnected, lastRunning, heartUntil, now,
+                              debugActive, debugState };
+        PersonaState  st  = derivePersonaState(pin);
+        buddyCoolSTick(buddySprite, st, now, ov);
+        buddySprite.pushSprite(0, 0);
+      }
     }
   }
 
