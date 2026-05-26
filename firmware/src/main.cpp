@@ -435,16 +435,6 @@ static void setupBuddySprite() {
     Serial.println("[buddy] sprite 4bpp 320x240 (fallback)");
     return;
   }
-  // Last resort: buddy region only, 4bpp (x 100..220).
-  buddySprite.setColorDepth(4);
-  if (buddySprite.createSprite(120, 240)) {
-    uint16_t pal[PAL4_SIZE]; buildPalette4(pal);
-    for (int i = 0; i < PAL4_SIZE; ++i) buddySprite.setPaletteColor(i, pal[i]);
-    buddyDepth = DEPTH_4; buddyReady = true;
-    buddyInit(DEPTH_4);
-    Serial.println("[buddy] sprite 4bpp 120x240 (region fallback)");
-    return;
-  }
   Serial.println("[buddy] ERROR: could not allocate sprite; buddy disabled");
   buddyReady = false;
 }
