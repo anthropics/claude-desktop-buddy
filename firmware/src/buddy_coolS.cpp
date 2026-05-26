@@ -71,7 +71,7 @@ static void renderIdle(M5GFX_Sprite_t& spr, uint32_t t) {
   float p = (float)(t % 7000) / 7000.0f;
   float op[COOL_S_COUNT];
   idleRevealOpacities(p, op);
-  drawCoolS(spr, CX, CY, 0.55f, 3.0f, op, -1);
+  drawCoolS(spr, CX, CY, 0.55f, 4.5f, op, -1);
 }
 
 static void renderBusy(M5GFX_Sprite_t& spr, uint32_t t) {
@@ -80,7 +80,7 @@ static void renderBusy(M5GFX_Sprite_t& spr, uint32_t t) {
   // Full figure, then erase below the scanline (top-to-bottom reveal).
   float op[COOL_S_COUNT];
   for (int i = 0; i < COOL_S_COUNT; ++i) op[i] = 0.95f;
-  drawCoolS(spr, CX, CY, 0.55f, 3.0f, op, -1);
+  drawCoolS(spr, CX, CY, 0.55f, 4.5f, op, -1);
   spr.fillRect(0, scanY, 320, 240 - scanY, 0);          // mask below scanline
   spr.fillRect(0, scanY - 1, 320, 2, gGreenMax_idx());  // bright edge bar
   // Progress dots: 5, cycling every 200ms.
@@ -100,7 +100,7 @@ static void renderAttention(M5GFX_Sprite_t& spr, uint32_t t) {
   int16_t sy = (int16_t)(cosf(t / 35.0f) * 1.2f);
   float op[COOL_S_COUNT];
   for (int i = 0; i < COOL_S_COUNT; ++i) op[i] = opacity;
-  drawCoolS(spr, CX + sx, CY + sy, scale, 4.0f, op, ci);
+  drawCoolS(spr, CX + sx, CY + sy, scale, 5.5f, op, ci);
   // Pulsing ! in four corners (alternating phase).
   const int16_t cxs[4] = {22, 298, 22, 298};
   const int16_t cys[4] = {36, 36, 216, 216};
@@ -120,7 +120,7 @@ static void renderCelebrate(M5GFX_Sprite_t& spr, uint32_t t) {
   //  bounce + confetti carry the celebrate read. Documented simplification.)
   float op[COOL_S_COUNT];
   for (int i = 0; i < COOL_S_COUNT; ++i) op[i] = 1.0f;
-  drawCoolS(spr, CX, CY + yOff, scale, 4.0f, op, -1);
+  drawCoolS(spr, CX, CY + yOff, scale, 5.0f, op, -1);
   // Radial confetti: 16 glyphs flying outward, looping.
   const char* glyphs[4] = {"*", "+", "x", "."};
   for (int i = 0; i < 16; ++i) {
@@ -142,10 +142,10 @@ static void renderDizzy(M5GFX_Sprite_t& spr, uint32_t t) {
   float sX = 0.55f + sinf(t / 300.0f) * 0.05f;
   // Phantom S at 32% (drawn first, dimmer).
   float ph[COOL_S_COUNT]; for (int i=0;i<COOL_S_COUNT;++i) ph[i]=0.32f;
-  drawCoolS(spr, (int16_t)(CX - wobble * 0.7f), CY, sX, 3.0f, ph, -1);
+  drawCoolS(spr, (int16_t)(CX - wobble * 0.7f), CY, sX, 3.8f, ph, -1);
   // Main S.
   float op[COOL_S_COUNT]; for (int i=0;i<COOL_S_COUNT;++i) op[i]=1.0f;
-  drawCoolS(spr, (int16_t)(CX + wobble + glitch), CY, sX, 3.0f, op, -1);
+  drawCoolS(spr, (int16_t)(CX + wobble + glitch), CY, sX, 4.5f, op, -1);
   // Four orbiting ? glyphs.
   for (int i = 0; i < 4; ++i) {
     float a = t / 600.0f + i * (float)M_PI / 2.0f;
@@ -163,7 +163,7 @@ static void renderHeart(M5GFX_Sprite_t& spr, uint32_t t) {
   float scale = 0.55f + k * 0.06f;
   bool  useRed = k > 0.15f;
   float op[COOL_S_COUNT]; for (int i=0;i<COOL_S_COUNT;++i) op[i]=1.0f;
-  drawCoolS(spr, CX, CY, scale, 3.0f + k * 4.0f, op, useRed ? gRed : -1);
+  drawCoolS(spr, CX, CY, scale, 4.5f + k * 4.0f, op, useRed ? gRed : -1);
   // 5 'v' hearts floating up (red).
   for (int i = 0; i < 5; ++i) {
     float phf = (float)((t + i * 480) % 2400) / 2400.0f;
