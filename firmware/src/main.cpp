@@ -124,6 +124,15 @@ static void renderPrompt(const char* tool, const char* detail,
   M5.Display.print("[C] Deny");
 }
 
+static void renderPasskey(uint32_t pk) {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(8, 8);  M5.Display.print("Pair this code:");
+  M5.Display.setTextSize(4);
+  M5.Display.setCursor(8, 60); M5.Display.printf("%06u", pk);
+}
+
 static void renderAsk() {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -626,6 +635,7 @@ void loop() {
       }
     }
   } else if (promptId[0] != 0 && M5.BtnA.wasPressed()) {
+    heartUntil = millis() + 3000;   // button approve -> heart (auto-allows don't)
     sendDecision("allow");
   } else if (promptId[0] != 0 && M5.BtnC.wasPressed()) {
     sendDecision("deny");
@@ -637,5 +647,46 @@ void loop() {
   // into the next ask, where it would swallow the first short-press.
   if (M5.BtnA.wasReleased()) aLongFired = false;
   if (M5.BtnB.wasReleased()) bLongFired = false;
-  delay(20);
+
+  // Debug cycle: long-press BtnA on the home screen toggles debug; BtnC advances.
+  if (askId[0] == 0 && promptId[0] == 0 && !pairing) {
+    static bool dbgLongFired = false;
+    if (M5.BtnA.isPressed() && btnAPressMs != 0 &&
+        (millis() - btnAPressMs) >= LONG_PRESS_MS && !dbgLongFired) {
+      dbgLongFired = true;
+      debugActive = !debugActive;
+      debugState  = PS_SLEEP;
+    }
+    if (M5.BtnA.wasReleased()) dbgLongFired = false;
+    if (debugActive && M5.BtnC.wasPressed())
+      debugState = (PersonaState)(((int)debugState + 1) % (int)PS_COUNT);
+  }
+
+  // --- Buddy render (home screen only, ~30fps) ---------------------------
+  if (buddyReady && askId[0] == 0 && promptId[0] == 0) {
+    unsigned long now = millis();
+    if (pairing) {
+      renderPasskey(passkeyVal);          // loop owns the passkey draw
+    } else if (now - lastFrameMs >= 33) {
+      lastFrameMs = now;
+      BuddyOverlay ov;
+      ov.running = lastRunning; ov.waiting = lastWaiting; ov.total = lastTotal;
+      portENTER_CRITICAL(&statusMux);
+      strlcpy(ov.statusMsg, lastStatusMsg, sizeof(ov.statusMsg));
+      portEXIT_CRITICAL(&statusMux);
+      ov.autoOn      = autoApprove;
+      ov.autoCount   = autoCount;
+      ov.autoToast   = (autoFlashUntil != 0 && now < autoFlashUntil);
+      strlcpy(ov.autoToolMsg, promptTool, sizeof(ov.autoToolMsg));
+      ov.debugActive = debugActive;
+
+      PersonaInputs pin = { centralConnected, lastRunning, heartUntil, now,
+                            debugActive, debugState };
+      PersonaState  st  = derivePersonaState(pin);
+      buddyCoolSTick(buddySprite, st, now, ov);
+      buddySprite.pushSprite(0, 0);
+    }
+  }
+
+  delay(1);   // pace off the 33ms frame accumulator, keep buttons responsive
 }
