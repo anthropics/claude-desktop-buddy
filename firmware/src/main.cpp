@@ -20,6 +20,10 @@
 #include <M5Unified.h>
 #include <ArduinoJson.h>
 
+#include "buddy_coolS.h"
+#include "buddy_palette.h"
+#include "buddy_state.h"
+
 // Nordic UART Service — must match the bridge / REFERENCE.md exactly.
 #define NUS_SERVICE "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define NUS_RX      "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  // central writes here
@@ -42,6 +46,23 @@ static int lastRunning = 0, lastWaiting = 0, lastTotal = 0;
 static char lastStatusMsg[64] = "idle";
 static int autoCount = 0;
 static unsigned long autoFlashUntil = 0;  // millis() deadline for green toast
+
+static M5GFX_Sprite_t buddySprite(&M5.Display);
+static BuddyDepth buddyDepth = DEPTH_8;
+static bool buddyReady = false;
+
+// New volatile cross-task flags.
+static volatile bool          pairing      = false;
+static volatile unsigned long heartUntil   = 0;
+static volatile uint32_t      passkeyVal   = 0;
+
+// Debug cycle (home screen only).
+static bool         debugActive = false;
+static PersonaState debugState  = PS_SLEEP;
+static unsigned long lastFrameMs = 0;
+
+// Spinlock guarding lastStatusMsg only (see spec "Cross-task synchronization").
+static portMUX_TYPE statusMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ----- AskUserQuestion screen state -----
 static char askId[48] = {0};                 // empty == no ask in flight
@@ -441,6 +462,45 @@ class SecurityCallbacks : public BLESecurityCallbacks {
   }
 };
 
+static void setupBuddySprite() {
+  Serial.printf("[buddy] free heap %u, largest block %u\n",
+                ESP.getFreeHeap(),
+                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  // Try 8bpp full-screen (~75KB) with a 20KB margin.
+  buddySprite.setColorDepth(8);
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > (76800u + 20480u) &&
+      buddySprite.createSprite(320, 240)) {
+    uint16_t pal[PAL8_SIZE]; buildPalette8(pal);
+    for (int i = 0; i < PAL8_SIZE; ++i) buddySprite.setPaletteColor(i, pal[i]);
+    buddyDepth = DEPTH_8; buddyReady = true;
+    buddyInit(DEPTH_8);
+    Serial.println("[buddy] sprite 8bpp 320x240");
+    return;
+  }
+  // Fallback: 4bpp full-screen (~37.5KB).
+  buddySprite.setColorDepth(4);
+  if (buddySprite.createSprite(320, 240)) {
+    uint16_t pal[PAL4_SIZE]; buildPalette4(pal);
+    for (int i = 0; i < PAL4_SIZE; ++i) buddySprite.setPaletteColor(i, pal[i]);
+    buddyDepth = DEPTH_4; buddyReady = true;
+    buddyInit(DEPTH_4);
+    Serial.println("[buddy] sprite 4bpp 320x240 (fallback)");
+    return;
+  }
+  // Last resort: buddy region only, 4bpp (x 100..220).
+  buddySprite.setColorDepth(4);
+  if (buddySprite.createSprite(120, 240)) {
+    uint16_t pal[PAL4_SIZE]; buildPalette4(pal);
+    for (int i = 0; i < PAL4_SIZE; ++i) buddySprite.setPaletteColor(i, pal[i]);
+    buddyDepth = DEPTH_4; buddyReady = true;
+    buddyInit(DEPTH_4);
+    Serial.println("[buddy] sprite 4bpp 120x240 (region fallback)");
+    return;
+  }
+  Serial.println("[buddy] ERROR: could not allocate sprite; buddy disabled");
+  buddyReady = false;
+}
+
 void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
@@ -502,6 +562,8 @@ void setup() {
   sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
   Serial.println("[buddy] advertising as 'Claude-Buddy'");
+
+  setupBuddySprite();
 }
 
 // Send a JSON string as a NUS TX notification to the central.
