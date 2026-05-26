@@ -88,44 +88,6 @@ static unsigned long btnAPressMs = 0;        // long-press tracking
 static unsigned long btnBPressMs = 0;
 static const unsigned long LONG_PRESS_MS = 800;
 
-// Renders the live status screen. Phase 1 shows counts only — no message
-// text or transcript content ever reaches the device.
-static void renderStatus(int running, int waiting, int total,
-                         const char* msg) {
-  M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  M5.Display.setTextSize(2);
-  M5.Display.setCursor(8, 8);
-  M5.Display.print("Claude Buddy");
-
-  M5.Display.setTextSize(6);
-  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
-  M5.Display.setCursor(8, 56);
-  M5.Display.printf("%d", running);
-  M5.Display.setTextSize(2);
-  M5.Display.setCursor(8, 120);
-  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
-  M5.Display.print("running");
-
-  M5.Display.setTextSize(6);
-  M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
-  M5.Display.setCursor(170, 56);
-  M5.Display.printf("%d", waiting);
-  M5.Display.setTextSize(2);
-  M5.Display.setCursor(170, 120);
-  M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
-  M5.Display.print("waiting");
-
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.setCursor(8, 160);
-  M5.Display.printf("%d sessions", total);
-  M5.Display.setCursor(8, 200);
-  M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  M5.Display.print(msg);
-}
-
 // Forward declarations for functions called from RxCallbacks (defined later).
 static void sendNotify(const char* json);
 static void sendDecision(const char* decision);
@@ -281,16 +243,14 @@ static void askSendAnswers() {
   M5.Display.print("Sent");
   delay(1000);
 
-  askClear();
-  renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
+  askClear();    // loop repaints the buddy
 }
 
 static void askCancel() {
   char buf[80];
   snprintf(buf, sizeof(buf), "{\"cmd\":\"ask_cancel\",\"id\":\"%s\"}\n", askId);
   sendNotify(buf);
-  askClear();
-  renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
+  askClear();    // loop repaints the buddy
 }
 
 static void askAdvance() {
@@ -347,10 +307,10 @@ class RxCallbacks : public BLECharacteristicCallbacks {
       lastRunning = doc["running"] | 0;
       lastWaiting = doc["waiting"] | 0;
       lastTotal   = doc["total"]   | 0;
+      portENTER_CRITICAL(&statusMux);
       strlcpy(lastStatusMsg, doc["msg"] | "", sizeof(lastStatusMsg));
-      if (promptId[0] == 0 && askId[0] == 0) {
-        renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
-      }
+      portEXIT_CRITICAL(&statusMux);
+      // loop() repaints; no draw here.
     } else if (doc["evt"] == "prompt") {
       const char* incomingId = doc["id"] | "";
       if (promptId[0] != 0 && strcmp(incomingId, promptId) != 0) {
@@ -368,10 +328,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
       if (autoApprove) { sendDecision("allow"); }
       else             { renderPrompt(promptTool, promptDetail, promptChange); }
     } else if (doc["cmd"] == "prompt_cancel") {
-      if (strcmp(doc["id"] | "", promptId) == 0) {
-        promptId[0] = 0;
-        renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
-      }
+      if (strcmp(doc["id"] | "", promptId) == 0) promptId[0] = 0;  // loop repaints
     } else if (doc["cmd"] == "get_auto") {
       char buf[40];
       snprintf(buf, sizeof(buf), "{\"cmd\":\"auto\",\"state\":%s}\n",
@@ -380,21 +337,8 @@ class RxCallbacks : public BLECharacteristicCallbacks {
     } else if (doc["evt"] == "auto_fired") {
       autoCount++;
       autoFlashUntil = millis() + 1500;
-      const char* tool = doc["tool"] | "";
-      // Green toast at the bottom over the current status screen.
-      M5.Display.fillRect(0, 200, 320, 40, TFT_DARKGREEN);
-      M5.Display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-      M5.Display.setTextSize(2);
-      M5.Display.setCursor(8, 210);
-      M5.Display.printf("Auto: %s (%d)", tool, autoCount);
-      // If the AUTO banner is on, refresh it with the new count.
-      if (autoApprove) {
-        M5.Display.fillRect(0, 0, 320, 28, TFT_RED);
-        M5.Display.setTextColor(TFT_WHITE, TFT_RED);
-        M5.Display.setTextSize(2);
-        M5.Display.setCursor(8, 6);
-        M5.Display.printf("AUTO ON · %d", autoCount);
-      }
+      strlcpy(promptTool, doc["tool"] | "", sizeof(promptTool)); // reuse as toast tool
+      // No draw; overlay reads autoCount/autoFlashUntil/autoApprove each frame.
     }
     else if (doc["evt"] == "ask") {
       // Reject if a prompt or a different ask is already on screen.
@@ -433,10 +377,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
       renderAsk();
     }
     else if (doc["cmd"] == "ask_cancel") {
-      if (strcmp(doc["id"] | "", askId) == 0) {
-        askClear();
-        renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
-      }
+      if (strcmp(doc["id"] | "", askId) == 0) askClear();          // loop repaints
     }
   }
 };
@@ -447,17 +388,13 @@ class SecurityCallbacks : public BLESecurityCallbacks {
   uint32_t onPassKeyRequest() override { return 0; }
   void onPassKeyNotify(uint32_t pk) override {
     Serial.printf("\n  BLE PAIRING PASSKEY: %06u\n\n", pk);
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(8, 8);
-    M5.Display.print("Pair this code:");
-    M5.Display.setTextSize(4);
-    M5.Display.setCursor(8, 60);
-    M5.Display.printf("%06u", pk);
+    passkeyVal = pk;
+    pairing    = true;            // loop() draws the passkey screen
   }
   bool onConfirmPIN(uint32_t) override { return true; }
   bool onSecurityRequest() override { return true; }
   void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
+    pairing = false;
     Serial.printf("[ble] pairing %s\n", cmpl.success ? "SUCCEEDED" : "FAILED");
   }
 };
@@ -586,19 +523,21 @@ static void sendNotify(const char* json) {
   } while (off < total);
 }
 
-// Send the button decision back to the bridge, then clear the prompt state
-// and return to the status screen (next heartbeat will refresh the counts).
+// Send the button decision back to the bridge, then clear the prompt state.
+// loop() repaints the buddy on the next frame.
 static void sendDecision(const char* decision) {
   char buf[160];  // fits a full promptId[48] without truncating the JSON
   snprintf(buf, sizeof(buf),
            "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"%s\"}\n",
            promptId, decision);
   sendNotify(buf);
-  promptId[0] = 0;           // clear pending prompt
-  renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
+  promptId[0] = 0;     // clear pending prompt; loop repaints
+  // NOTE: heartUntil is set by the BtnA button handler, NOT here, so
+  // auto-approve auto-allows (which also call this) do not trigger heart.
 }
 
-// Toggle auto-approve mode, notify the bridge, and show a banner + beep.
+// Toggle auto-approve mode, notify the bridge, and beep. The AUTO banner is
+// drawn by the overlay each frame; this only mutates state + plays the beep.
 static void toggleAuto() {
   autoApprove = !autoApprove;
   if (!autoApprove) autoCount = 0;
@@ -606,15 +545,8 @@ static void toggleAuto() {
   snprintf(buf, sizeof(buf), "{\"cmd\":\"auto\",\"state\":%s}\n",
            autoApprove ? "true" : "false");
   sendNotify(buf);
-  // Banner so the auto-approve state is never ambiguous.
-  M5.Display.fillRect(0, 0, 320, 28, autoApprove ? TFT_RED : TFT_BLACK);
-  if (autoApprove) {
-    M5.Display.setTextColor(TFT_WHITE, TFT_RED);
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(8, 6);
-    M5.Display.printf("AUTO ON · %d", autoCount);
-    M5.Speaker.tone(880, 120);  // toggle-confirmation beep — keep
-  }
+  if (autoApprove) M5.Speaker.tone(880, 120);   // keep the confirmation beep
+  // Banner is drawn by the overlay each frame; no direct draw here.
 }
 
 void loop() {
@@ -630,21 +562,6 @@ void loop() {
     sendNotify(buf);
     Serial.printf("[ble] sent auto-sync state=%s\n",
                   autoApprove ? "true" : "false");
-  }
-
-  if (autoFlashUntil != 0 && millis() > autoFlashUntil) {
-    autoFlashUntil = 0;
-    if (promptId[0] == 0) {
-      renderStatus(lastRunning, lastWaiting, lastTotal, lastStatusMsg);
-      if (autoApprove) {
-        // Re-paint AUTO banner over the freshly rendered status.
-        M5.Display.fillRect(0, 0, 320, 28, TFT_RED);
-        M5.Display.setTextColor(TFT_WHITE, TFT_RED);
-        M5.Display.setTextSize(2);
-        M5.Display.setCursor(8, 6);
-        M5.Display.printf("AUTO ON · %d", autoCount);
-      }
-    }
   }
 
   // --- Button handling ---------------------------------------------------
