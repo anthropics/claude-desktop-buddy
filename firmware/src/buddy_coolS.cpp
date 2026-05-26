@@ -91,13 +91,101 @@ static void renderBusy(M5GFX_Sprite_t& spr, uint32_t t) {
   }
 }
 
+static void renderAttention(M5GFX_Sprite_t& spr, uint32_t t) {
+  bool flash = ((t / 110) % 2) == 0;
+  int  ci    = flash ? gWhite : -1;          // -1 -> green via opacity
+  float opacity = flash ? 1.0f : 0.75f;
+  float scale = 0.56f + 0.025f * sinf(t / 120.0f);
+  int16_t sx = (int16_t)(sinf(t / 30.0f) * 1.6f);
+  int16_t sy = (int16_t)(cosf(t / 35.0f) * 1.2f);
+  float op[COOL_S_COUNT];
+  for (int i = 0; i < COOL_S_COUNT; ++i) op[i] = opacity;
+  drawCoolS(spr, CX + sx, CY + sy, scale, 4.0f, op, ci);
+  // Pulsing ! in four corners (alternating phase).
+  const int16_t cxs[4] = {22, 298, 22, 298};
+  const int16_t cys[4] = {36, 36, 216, 216};
+  const float   ph [4] = {0, 0.5f, 0.5f, 0};
+  for (int i = 0; i < 4; ++i) {
+    bool on = ((int)(t / 150 + ph[i] * 2) % 2) == 0;
+    drawGlyph(spr, cxs[i], cys[i], "!", on ? gWhite : greenIdx(0.3f), 3);
+  }
+}
+
+static void renderCelebrate(M5GFX_Sprite_t& spr, uint32_t t) {
+  float bp  = (float)(t % 800) / 800.0f;
+  float hop = sinf(bp * (float)M_PI);            // 0..1..0
+  int16_t yOff = (int16_t)(-hop * 18);
+  float scale = 0.55f + 0.04f * hop;
+  // (Rotational sway from states.jsx is omitted: drawWideLine has no rotate;
+  //  bounce + confetti carry the celebrate read. Documented simplification.)
+  float op[COOL_S_COUNT];
+  for (int i = 0; i < COOL_S_COUNT; ++i) op[i] = 1.0f;
+  drawCoolS(spr, CX, CY + yOff, scale, 4.0f, op, -1);
+  // Radial confetti: 16 glyphs flying outward, looping.
+  const char* glyphs[4] = {"*", "+", "x", "."};
+  for (int i = 0; i < 16; ++i) {
+    float angle = (float)i / 16.0f * 2.0f * (float)M_PI;
+    float phase = (float)((t + i * 100) % 1600) / 1600.0f;
+    float radius = 30 + phase * 130;
+    int16_t px = (int16_t)(CX + cosf(angle) * radius);
+    int16_t py = (int16_t)(CY + sinf(angle) * radius * 0.7f);
+    float o = sinf(phase * (float)M_PI);
+    drawGlyph(spr, px, py, glyphs[i % 4], greenIdx(o * 0.85f), 2);
+  }
+  if (hop > 0.55f)
+    drawGlyph(spr, CX, 36, "LVL UP", greenIdx((hop - 0.55f) / 0.45f), 3);
+}
+
+static void renderDizzy(M5GFX_Sprite_t& spr, uint32_t t) {
+  float wobble = sinf(t / 200.0f) * 8.0f;
+  float glitch = (((t / 800) % 4) == 0) ? sinf(t / 20.0f) * 3.0f : 0.0f;
+  float sX = 0.55f + sinf(t / 300.0f) * 0.05f;
+  // Phantom S at 32% (drawn first, dimmer).
+  float ph[COOL_S_COUNT]; for (int i=0;i<COOL_S_COUNT;++i) ph[i]=0.32f;
+  drawCoolS(spr, (int16_t)(CX - wobble * 0.7f), CY, sX, 3.0f, ph, -1);
+  // Main S.
+  float op[COOL_S_COUNT]; for (int i=0;i<COOL_S_COUNT;++i) op[i]=1.0f;
+  drawCoolS(spr, (int16_t)(CX + wobble + glitch), CY, sX, 3.0f, op, -1);
+  // Four orbiting ? glyphs.
+  for (int i = 0; i < 4; ++i) {
+    float a = t / 600.0f + i * (float)M_PI / 2.0f;
+    int16_t px = (int16_t)(CX + cosf(a) * 80);
+    int16_t py = (int16_t)(CY + sinf(a) * 50);
+    drawGlyph(spr, px, py, "?", greenIdx(0.85f), 2);
+  }
+}
+
+static void renderHeart(M5GFX_Sprite_t& spr, uint32_t t) {
+  float p = (float)(t % 1200) / 1200.0f;
+  // Two narrow gaussians at p=0.10 and p=0.30.
+  float k = expf(-powf((p - 0.10f) * 14.0f, 2)) +
+            expf(-powf((p - 0.30f) * 14.0f, 2)) * 0.7f;
+  float scale = 0.55f + k * 0.06f;
+  bool  useRed = k > 0.15f;
+  float op[COOL_S_COUNT]; for (int i=0;i<COOL_S_COUNT;++i) op[i]=1.0f;
+  drawCoolS(spr, CX, CY, scale, 3.0f + k * 4.0f, op, useRed ? gRed : -1);
+  // 5 'v' hearts floating up (red).
+  for (int i = 0; i < 5; ++i) {
+    float phf = (float)((t + i * 480) % 2400) / 2400.0f;
+    int16_t px = (int16_t)(80 + i * 40 + sinf(phf * 4 + i) * 8);
+    int16_t py = (int16_t)(220 - phf * 200);
+    // Hearts fade with sin(phf*pi); red has no ramp, so skip when too dim.
+    if (sinf(phf * (float)M_PI) > 0.25f)
+      drawGlyph(spr, px, py, "v", gRed, 2);
+  }
+}
+
 void buddyCoolSTick(M5GFX_Sprite_t& spr, PersonaState state, uint32_t tMs,
                     const BuddyOverlay& overlay) {
   spr.fillScreen(0);
   switch (state) {
-    case PS_SLEEP: renderSleep(spr, tMs); break;
-    case PS_IDLE:  renderIdle(spr, tMs);  break;
-    case PS_BUSY:  renderBusy(spr, tMs);  break;
-    default:       renderIdle(spr, tMs);  break;  // others added in Task 9
+    case PS_SLEEP:     renderSleep(spr, tMs);     break;
+    case PS_IDLE:      renderIdle(spr, tMs);      break;
+    case PS_BUSY:      renderBusy(spr, tMs);      break;
+    case PS_ATTENTION: renderAttention(spr, tMs); break;
+    case PS_CELEBRATE: renderCelebrate(spr, tMs); break;
+    case PS_DIZZY:     renderDizzy(spr, tMs);     break;
+    case PS_HEART:     renderHeart(spr, tMs);     break;
+    default:           renderIdle(spr, tMs);      break;
   }
 }
