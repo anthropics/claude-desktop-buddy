@@ -20,8 +20,6 @@ void buddyInit(BuddyDepth depth) {
 // Green palette index for opacity o in [0,1] (depth-aware).
 static inline int greenIdx(float o) { return (int)lroundf(clamp01(o) * gGreenMax); }
 
-static inline int gGreenMax_idx() { return gGreenMax; }
-
 // Draw one primitive as a wide line / two-segment polyline at palette index `ci`.
 static void drawPrim(M5GFX_Sprite_t& spr, const Primitive& pr,
                      int16_t cx, int16_t cy, float scale, int ci, float width) {
@@ -82,7 +80,7 @@ static void renderBusy(M5GFX_Sprite_t& spr, uint32_t t) {
   for (int i = 0; i < COOL_S_COUNT; ++i) op[i] = 0.95f;
   drawCoolS(spr, CX, CY, 0.55f, 4.5f, op, -1);
   spr.fillRect(0, scanY, 320, 240 - scanY, 0);          // mask below scanline
-  spr.fillRect(0, scanY - 1, 320, 2, gGreenMax_idx());  // bright edge bar
+  spr.fillRect(0, (scanY > 0 ? scanY - 1 : 0), 320, 2, gGreenMax);  // bright edge bar
   // Progress dots: 5, cycling every 200ms.
   int lit = (int)((t / 200) % 5);
   for (int i = 0; i < 5; ++i) {
@@ -188,7 +186,8 @@ static void drawOverlay(M5GFX_Sprite_t& spr, const BuddyOverlay& o) {
   spr.setCursor(6, 90);  spr.printf("%dW", o.waiting);
   spr.setCursor(258, 40); spr.printf("%d", o.total);
   // Status msg: bottom strip, truncated to fit 320px (~52 chars at size 1).
-  if (o.statusMsg[0]) {
+  // Suppressed when autoToast is active (both share y=230).
+  if (o.statusMsg[0] && !o.autoToast) {
     spr.setTextSize(1);
     char buf[54]; strncpy(buf, o.statusMsg, 53); buf[53] = 0;
     spr.setTextColor(greenIdx(0.5f));
@@ -203,7 +202,8 @@ static void drawOverlay(M5GFX_Sprite_t& spr, const BuddyOverlay& o) {
   // Transient auto-fired toast (bottom).
   if (o.autoToast) {
     spr.setTextColor(greenIdx(1.0f)); spr.setTextSize(1);
-    spr.setCursor(120, 230); spr.printf("Auto: %s (%d)", o.autoToolMsg, o.autoCount);
+    char tbuf[41]; strncpy(tbuf, o.autoToolMsg, 40); tbuf[40] = 0;
+    spr.setCursor(120, 230); spr.printf("Auto: %s (%d)", tbuf, o.autoCount);
   }
 }
 

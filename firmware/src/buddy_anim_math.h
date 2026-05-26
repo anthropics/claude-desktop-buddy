@@ -10,8 +10,10 @@ inline float sineCycle(float tMs, float periodMs) {
   return 0.5f + 0.5f * std::sin(2.0f * (float)M_PI * tMs / periodMs);
 }
 
-// Map opacity o in [0,1] to an 8bpp green-ramp index (0..59). White=60, red=61.
+// rampIndex8 maps to the PAL8 layout (0..59 green ramp; White=60, red=61).
+// rampIndex4 maps to the PAL4 layout (0..13 green ramp; White=14, red=15).
+// NOTE: the runtime renderer in buddy_coolS.cpp uses the depth-aware greenIdx()
+// helper instead — do NOT call rampIndex8/rampIndex4 directly in render code.
+// These helpers exist for unit tests and must not be removed.
 inline int rampIndex8(float o) { return (int)lroundf(clamp01(o) * 59.0f); }
-
-// Map opacity o in [0,1] to a 4bpp green-ramp index (0..13). White=14, red=15.
 inline int rampIndex4(float o) { return (int)lroundf(clamp01(o) * 13.0f); }
