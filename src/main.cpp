@@ -24,6 +24,22 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
+// The UI sprite is authored at the StickC's 135x240. On larger panels (e.g.
+// the StopWatch's 466x466 round AMOLED) center it and, when there's room,
+// zoom it up so text and animation fill the display. spriteX/Y and uiZoom
+// are computed once in setup() from the detected panel size.
+int   spriteX = 0, spriteY = 0;
+float uiZoom  = 1.0f;
+static inline void pushUi() {
+  if (uiZoom > 1.001f) {
+    // Centered scale-up. Pivot is the sprite center (set in setup()), so the
+    // surrounding ring stays black (filled once at boot). Corners of the
+    // portrait rect are kept inside the circle by the zoom chosen in setup().
+    spr.pushRotateZoom(M5.Lcd.width() / 2.0f, M5.Lcd.height() / 2.0f, 0.0f, uiZoom, uiZoom);
+  } else {
+    spr.pushSprite(spriteX, spriteY);
+  }
+}
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 const int LED_PIN = -1;          // no user LED on StickS3
 #else
@@ -1075,6 +1091,22 @@ void setup() {
 
   // BLE stays always-on; s.bt is stored as a preference only.
   spr.createSprite(W, H);
+  // Center the portrait UI sprite on panels larger than the StickC. On the
+  // StopWatch's 468x468 round screen this keeps the buddy in the middle and
+  // paints the exposed surround so it isn't an uninitialized border.
+  spriteX = (M5.Lcd.width()  - W) / 2; if (spriteX < 0) spriteX = 0;
+  spriteY = (M5.Lcd.height() - H) / 2; if (spriteY < 0) spriteY = 0;
+  // On panels much larger than the sprite, zoom it to fill the display. The
+  // limit is the inscribed rectangle: the portrait rect's diagonal must fit
+  // inside the round screen (factor 0.96 leaves a hair of margin) so no
+  // corner gets clipped by the bezel. <=1.0 means "don't zoom" (StickC).
+  {
+    float diag   = sqrtf((float)W * W + (float)H * H);
+    float screenMin = (float)min(M5.Lcd.width(), M5.Lcd.height());
+    float z = screenMin * 0.96f / diag;
+    if (z > 1.05f) { uiZoom = z; spr.setPivot(W / 2.0f, H / 2.0f); }
+  }
+  if (spriteX > 0 || spriteY > 0 || uiZoom > 1.001f) M5.Lcd.fillScreen(TFT_BLACK);
   characterInit(nullptr);  // scan /characters/ for whatever is installed
   gifAvailable = characterLoaded();
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
@@ -1101,11 +1133,85 @@ void setup() {
       spr.drawString("a buddy appears", W/2, H/2 + 12);
     }
     spr.setTextDatum(TL_DATUM); spr.setTextSize(1);
-    spr.pushSprite(0, 0);
+    pushUi();
     delay(1800);
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+}
+
+// ──────────────── shared UI actions ────────────────
+// Single-sourced so the physical buttons (BtnA/BtnB) and the StopWatch touch
+// screen drive identical behavior. "primary" = approve / navigate-next,
+// "secondary" = deny / select-confirm, "menu" = open/close the menu.
+static void uiActionMenu() {
+  if (resetOpen) { resetOpen = false; }
+  else if (settingsOpen) { settingsOpen = false; characterInvalidate(); }
+  else {
+    menuOpen = !menuOpen;
+    menuSel = 0;
+    if (!menuOpen) characterInvalidate();
+  }
+  Serial.println(menuOpen ? "menu open" : "menu close");
+}
+
+static void uiActionPrimary() {
+  bool inPrompt = tama.promptId[0] && !responseSent;
+  if (inPrompt) {
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
+    sendCmd(cmd);
+    responseSent = true;
+    uint32_t tookS = (millis() - promptArrivedMs) / 1000;
+    statsOnApproval(tookS);
+    beep(2400, 60);
+    if (tookS < 5) triggerOneShot(P_HEART, 2000);
+  } else if (resetOpen) {
+    beep(1800, 30);
+    resetSel = (resetSel + 1) % RESET_N;
+    resetConfirmIdx = 0xFF;
+  } else if (settingsOpen) {
+    beep(1800, 30);
+    settingsSel = (settingsSel + 1) % SETTINGS_N;
+  } else if (menuOpen) {
+    beep(1800, 30);
+    menuSel = (menuSel + 1) % MENU_N;
+  } else {
+    beep(1800, 30);
+    displayMode = (displayMode + 1) % DISP_COUNT;
+    applyDisplayMode();
+  }
+}
+
+static void uiActionSecondary() {
+  bool inPrompt = tama.promptId[0] && !responseSent;
+  if (inPrompt) {
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
+    sendCmd(cmd);
+    responseSent = true;
+    statsOnDenial();
+    beep(600, 60);
+  } else if (resetOpen) {
+    beep(2400, 30);
+    applyReset(resetSel);
+  } else if (settingsOpen) {
+    beep(2400, 30);
+    applySetting(settingsSel);
+  } else if (menuOpen) {
+    beep(2400, 30);
+    menuConfirm();
+  } else if (displayMode == DISP_INFO) {
+    beep(2400, 30);
+    infoPage = (infoPage + 1) % INFO_PAGES;
+  } else if (displayMode == DISP_PET) {
+    beep(2400, 30);
+    petPage = (petPage + 1) % PET_PAGES;
+    applyDisplayMode();
+  } else {
+    beep(2400, 30);
+    msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+  }
 }
 
 void loop() {
@@ -1189,76 +1295,36 @@ void loop() {
   if (M5.BtnA.pressedFor(600) && !btnALong && !swallowBtnA) {
     btnALong = true;
     beep(800, 60);
-    if (resetOpen) { resetOpen = false; }
-    else if (settingsOpen) { settingsOpen = false; characterInvalidate(); }
-    else {
-      menuOpen = !menuOpen;
-      menuSel = 0;
-      if (!menuOpen) characterInvalidate();
-    }
-    Serial.println(menuOpen ? "menu open" : "menu close");
+    uiActionMenu();
   }
   if (M5.BtnA.wasReleased()) {
-    if (!btnALong && !swallowBtnA) {
-      if (inPrompt) {
-        char cmd[96];
-        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
-        sendCmd(cmd);
-        responseSent = true;
-        uint32_t tookS = (millis() - promptArrivedMs) / 1000;
-        statsOnApproval(tookS);
-        beep(2400, 60);
-        if (tookS < 5) triggerOneShot(P_HEART, 2000);
-      } else if (resetOpen) {
-        beep(1800, 30);
-        resetSel = (resetSel + 1) % RESET_N;
-        resetConfirmIdx = 0xFF;
-      } else if (settingsOpen) {
-        beep(1800, 30);
-        settingsSel = (settingsSel + 1) % SETTINGS_N;
-      } else if (menuOpen) {
-        beep(1800, 30);
-        menuSel = (menuSel + 1) % MENU_N;
-      } else {
-        beep(1800, 30);
-        displayMode = (displayMode + 1) % DISP_COUNT;
-        applyDisplayMode();
-      }
-    }
+    if (!btnALong && !swallowBtnA) uiActionPrimary();
     btnALong = false;
     swallowBtnA = false;
   }
 
-  // BtnB: pet → heart
+  // BtnB: deny / select / scroll
   if (M5.BtnB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
-    else
-    if (inPrompt) {
-      char cmd[96];
-      snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
-      sendCmd(cmd);
-      responseSent = true;
-      statsOnDenial();
-      beep(600, 60);
-    } else if (resetOpen) {
-      beep(2400, 30);
-      applyReset(resetSel);
-    } else if (settingsOpen) {
-      beep(2400, 30);
-      applySetting(settingsSel);
-    } else if (menuOpen) {
-      beep(2400, 30);
-      menuConfirm();
-    } else if (displayMode == DISP_INFO) {
-      beep(2400, 30);
-      infoPage = (infoPage + 1) % INFO_PAGES;
-    } else if (displayMode == DISP_PET) {
-      beep(2400, 30);
-      petPage = (petPage + 1) % PET_PAGES;
-      applyDisplayMode();
-    } else {
-      beep(2400, 30);
-      msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+    else uiActionSecondary();
+  }
+
+  // Touch (StopWatch round screen): tap the left half = primary (approve /
+  // navigate-next), right half = secondary (deny / select), hold = menu.
+  // Mirrors the two physical buttons so the device is fully usable by touch,
+  // matching the on-screen "approve" (left) / "deny" (right) labels.
+  if (M5.Touch.isEnabled()) {
+    auto td = M5.Touch.getDetail();
+    if (screenOff) {
+      if (td.wasClicked() || td.wasHold()) wake();
+    } else if (td.wasHold()) {
+      wake();
+      beep(800, 60);
+      uiActionMenu();
+    } else if (td.wasClicked()) {
+      wake();
+      if (td.x < (int)(M5.Lcd.width() / 2)) uiActionPrimary();
+      else                                  uiActionSecondary();
     }
   }
 
@@ -1277,6 +1343,10 @@ void loop() {
                && rtcLooksValid() && _onUsb;
   if (clocking) clockUpdateOrient();
   else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
+  // Landscape clock draws straight to the LCD at StickC coordinates, which on
+  // a large zoomed panel lands tiny in a corner. Keep the centered, zoomed
+  // portrait clock instead on those screens.
+  if (uiZoom > 1.001f) clockOrient = 0;
   bool landscapeClock = clocking && clockOrient != 0;
 
   static bool wasClocking = false;
@@ -1350,7 +1420,7 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
-    spr.pushSprite(0, 0);
+    pushUi();
   }
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
