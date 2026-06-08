@@ -86,7 +86,13 @@ class ServerCallbacks : public BLEServerCallbacks {
 class SecCallbacks : public BLESecurityCallbacks {
   uint32_t onPassKeyRequest() override { return 0; }
   bool onConfirmPIN(uint32_t) override { return false; }
-  bool onSecurityRequest() override { return true; }
+  bool onSecurityRequest() override {
+#ifdef BUDDY_BOARD_STICKS3
+    return false;   // S3: refuse bonding — daemon uses the open debug service
+#else
+    return true;
+#endif
+  }
   void onPassKeyNotify(uint32_t pk) override {
     passkey = pk;
     Serial.printf("[ble] passkey %06lu\n", (unsigned long)pk);
@@ -104,7 +110,9 @@ void bleInit(const char* deviceName) {
   // Request the biggest MTU we can get. macOS negotiates to 185 typically.
   BLEDevice::setMTU(517);
 
+#ifndef BUDDY_BOARD_STICKS3
   BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
+#endif
   BLEDevice::setSecurityCallbacks(new SecCallbacks());
 
   server = BLEDevice::createServer();
@@ -116,16 +124,30 @@ void bleInit(const char* deviceName) {
     NUS_TX_UUID,
     BLECharacteristic::PROPERTY_NOTIFY
   );
+#ifdef BUDDY_BOARD_STICKS3
+  // S3 integrates via the open debug service, so leave the main NUS chars
+  // unencrypted too — that way NO characteristic forces pairing and a fresh
+  // (unbonded) stick is connectable by the daemon without the flaky passkey
+  // dance. Claude-Desktop-direct encrypted use isn't part of the S3 flow.
+  txChar->setAccessPermissions(ESP_GATT_PERM_READ);
+  BLE2902* cccd = new BLE2902();
+  cccd->setAccessPermissions(ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE);
+#else
   txChar->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED);
   BLE2902* cccd = new BLE2902();
   cccd->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
+#endif
   txChar->addDescriptor(cccd);
 
   rxChar = svc->createCharacteristic(
     NUS_RX_UUID,
     BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
   );
+#ifdef BUDDY_BOARD_STICKS3
+  rxChar->setAccessPermissions(ESP_GATT_PERM_WRITE);
+#else
   rxChar->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED);
+#endif
   rxChar->setCallbacks(new RxCallbacks());
 
   svc->start();
@@ -149,12 +171,17 @@ void bleInit(const char* deviceName) {
   drxChar->setCallbacks(new RxCallbacks());   // same callback feeds shared rxBuf
   dsvc->start();
 
+#ifndef BUDDY_BOARD_STICKS3
+  // No bonding setup on S3 — nothing here requires encryption, so requesting
+  // SC_MITM_BOND would only re-introduce the passkey dance that blocks a fresh
+  // stick from connecting.
   BLESecurity* sec = new BLESecurity();
   sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
   sec->setCapability(ESP_IO_CAP_OUT);
   sec->setKeySize(16);
   sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
   sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+#endif
 
   BLEAdvertising* adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(NUS_SERVICE_UUID);

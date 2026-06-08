@@ -1008,10 +1008,12 @@ void setup() {
   // M5Canvas sprite allocation. Re-enable after sprite path is verified, with
   // a smaller buffer if needed.
   // audioCaptureInit();  // Plus2: 64KB ring starves the M5Canvas sprite on ESP32 DRAM
-#ifdef BUDDY_BOARD_STICKS3
+#if defined(BUDDY_BOARD_STICKS3) && defined(BUDDY_S3_MIC_CAPTURE)
   // StickS3 is ESP32-S3 (512KB SRAM) + 8MB PSRAM, so the 64KB ADPCM ring fits
   // alongside the sprite. Brings up the ES8311 mic-capture path for the
   // on-device vibecoding dictation stream (lazy mic begin happens in Start()).
+  // GATED: M5.Mic.begin() wedges the IMU's shared internal I2C bus → WDT
+  // bootloop. Disabled until the I2C coexistence is fixed.
   audioCaptureInit();
 #endif
   uint32_t freeHeapPost = ESP.getFreeHeap();
@@ -1081,7 +1083,7 @@ void loop() {
   // audio disabled in Plus2 build — see setup()
   // audioCapturePump();
   // audioBleStreamPump();
-#ifdef BUDDY_BOARD_STICKS3
+#if defined(BUDDY_BOARD_STICKS3) && defined(BUDDY_S3_MIC_CAPTURE)
   // Drain the ES8311 DMA into the ADPCM ring, then emit ring frames over BLE.
   // Both are no-ops unless a PTT capture session is active.
   audioCapturePump();
@@ -1229,7 +1231,7 @@ void loop() {
     sendCmd("{\"cmd\":\"mic\",\"state\":\"down\"}");
     beep(2400, 80);
     characterInvalidate();
-#ifdef BUDDY_BOARD_STICKS3
+#if defined(BUDDY_BOARD_STICKS3) && defined(BUDDY_S3_MIC_CAPTURE)
     // Seize the ES8311 for capture and open the BLE ADPCM stream. This calls
     // M5.Speaker.end(), so the 2400Hz down-beep above is cut to a short click.
     audioCaptureStart();
@@ -1293,7 +1295,7 @@ void loop() {
       micActive = false;
       micCandidate = false;
       sendCmd("{\"cmd\":\"mic\",\"state\":\"up\"}");
-#ifdef BUDDY_BOARD_STICKS3
+#if defined(BUDDY_BOARD_STICKS3) && defined(BUDDY_S3_MIC_CAPTURE)
       // Stop capture (M5.Mic.end() → M5.Speaker.begin()) and flush/close the
       // BLE stream BEFORE the release beep, so the speaker is back for it.
       audioCaptureStop();
