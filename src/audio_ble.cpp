@@ -175,7 +175,11 @@ void audioBleStreamBegin() {
     s_durHead    = 0;
     s_durCount   = 0;
 
-    bleWriteStr("{\"evt\":\"audio_begin\",\"sr\":12000,\"frame_raw_bytes\":240,\"codec\":\"adpcm_ima\"}\n");
+    char beginBuf[JSON_BUF];
+    snprintf(beginBuf, sizeof(beginBuf),
+             "{\"evt\":\"audio_begin\",\"sr\":%lu,\"frame_raw_bytes\":%u,\"codec\":\"adpcm_ima\"}\n",
+             (unsigned long)audioCaptureSampleRate(), (unsigned)FRAME_BYTES);
+    bleWriteStr(beginBuf);
     Serial.println("[audio] stream begin");
 }
 

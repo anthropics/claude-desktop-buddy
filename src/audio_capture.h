@@ -15,6 +15,11 @@
 // Call from setup() after M5.Imu.Init(). Returns true on success.
 bool audioCaptureInit();
 
+// Capture sample rate (Hz). Plus2 PDM path = 12000; StickS3 ES8311 = 16000.
+// audio_ble.cpp reports this in the audio_begin envelope so the daemon decodes
+// at the right rate.
+uint32_t audioCaptureSampleRate();
+
 // PTT down — flush DMA, reset ring head/tail, begin capturing.
 void audioCaptureStart();
 
