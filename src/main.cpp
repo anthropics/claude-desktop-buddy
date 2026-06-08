@@ -108,9 +108,19 @@ uint32_t promptArrivedMs = 0;
 
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
+#ifdef BUDDY_BOARD_STICKS3
+  // StickS3: BMI270 IMU shares the internal I2C bus with the ES8311 audio
+  // codec (speaker AND mic). Any concurrent ES8311 access (a button beep or
+  // mic capture) vs a per-loop IMU read wedges the bus → TG1 watchdog reboot.
+  // The buddy's audio (beeps + the vibecoding mic) is the priority, so the
+  // IMU gimmicks (face-down, shake→dizzy, clock auto-orient) are disabled on
+  // S3 to free the bus. Idle-only IMU was fine; it's the audio overlap that kills.
+  return false;
+#else
   float ax, ay, az;
   imuGetAccel(&ax, &ay, &az);
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
+#endif
 }
 
 static void applyBrightness() { axpScreenBreath(20 + brightLevel * 20); }
@@ -379,6 +389,9 @@ static void clockRefreshRtc() {
 }
 
 static void clockUpdateOrient() {
+#ifdef BUDDY_BOARD_STICKS3
+  return;  // S3: IMU disabled (ES8311 audio shares the I2C bus) — see isFaceDown
+#else
   float ax, ay, az;
   imuGetAccel(&ax, &ay, &az);
   uint8_t lock = settings().clockRot;
@@ -415,6 +428,7 @@ static void clockUpdateOrient() {
     if (want != clockOrient) { if (++swapFrames >= 8) { clockOrient = want; swapFrames = 0; } }
     else swapFrames = 0;
   }
+#endif  // BUDDY_BOARD_STICKS3
 }
 
 // Clock face: shown when charging on USB with nothing else going on.
@@ -500,12 +514,16 @@ void triggerOneShot(PersonaState s, uint32_t durMs) {
 }
 
 bool checkShake() {
+#ifdef BUDDY_BOARD_STICKS3
+  return false;  // S3: IMU disabled (ES8311 audio shares the I2C bus) — see isFaceDown
+#else
   float ax, ay, az;
   imuGetAccel(&ax, &ay, &az);
   float mag = sqrtf(ax*ax + ay*ay + az*az);
   float delta = fabsf(mag - accelBaseline);
   accelBaseline = accelBaseline * 0.95f + mag * 0.05f;
   return delta > 0.8f;
+#endif  // BUDDY_BOARD_STICKS3
 }
 
 
@@ -993,6 +1011,16 @@ void setup() {
   delay(50);
   Serial.println("[setup] entering");
   auto cfg = M5.config();
+#ifdef BUDDY_BOARD_STICKS3
+  // StickS3: the BMI270 IMU shares the internal I2C bus with the ES8311 audio
+  // codec (speaker + mic). M5.update() polls the IMU over In_I2C every loop;
+  // when that overlaps an ES8311 access from the speaker/mic task the bus
+  // wedges → TG1 watchdog reboot (and the wedge survives soft reset). Turning
+  // off the internal IMU stops M5.update() from touching the bus, leaving it
+  // free for audio. The buddy's IMU gimmicks (shake→dizzy, tap, auto-orient)
+  // are already no-ops on S3. This is the real fix for "any beep/mic reboots".
+  cfg.internal_imu = false;
+#endif
   Serial.println("[setup] cfg ok, calling M5.begin");
   M5.begin(cfg);
   M5.Lcd.setRotation(0);

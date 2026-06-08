@@ -69,7 +69,14 @@ inline uint8_t axpGetBtnPress() {
 
 // ===== Buzzer ===== //
 inline void beepTone(uint16_t freq, uint16_t dur) {
+#ifdef BUDDY_BOARD_STICKS3
+  // ISOLATION: StickS3 reboots (TG1 watchdog) on any button beep. Disabling IMU
+  // (app + internal) did NOT help, so the culprit is the ES8311 speaker access
+  // itself. No-op beep to confirm + give a stable device.
+  (void)freq; (void)dur;
+#else
   M5.Speaker.tone(freq, dur);
+#endif
 }
 inline void beepBegin() { /* M5.begin handles it */ }
 inline void beepUpdate() { /* not needed on M5Unified */ }
