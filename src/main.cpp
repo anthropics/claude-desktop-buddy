@@ -1137,17 +1137,10 @@ void loop() {
   if (M5.BtnB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
     else
-    if (inPrompt && millis() - promptArrivedMs > 500) {
-      char _permCmd[160];
-      snprintf(_permCmd, sizeof(_permCmd),
-        "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
-      sendCmd(_permCmd);
-      responseSent = true;
-      statsOnDenial();
-      beep(600, 60);
-#ifdef BOARD_CYD
-      M5.setPromptMode(false);
-#endif
+    if (inPrompt) {
+      char cmd[96];
+      snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
+      sendCmd(cmd);
     } else if (resetOpen) {
       beep(2400, 30);
       applyReset(resetSel);
