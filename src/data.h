@@ -18,7 +18,7 @@ struct TamaState {
   uint16_t lineGen;          // bumps when lines change — lets UI reset scroll
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
-  char     promptHint[44];
+  char     promptHint[128];  // wrapped across several lines on the approval panel
 };
 
 // ---------------------------------------------------------------------------
@@ -81,8 +81,7 @@ static void _applyJson(const char* line, TamaState* out) {
     RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
     RTC_DateTypeDef dt = { (uint8_t)lt.tm_wday, (uint8_t)(lt.tm_mon + 1),
                            (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
-    M5.Rtc.SetTime(&tm);
-    M5.Rtc.SetDate(&dt);
+    compatRtcSet(&tm, &dt);
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
@@ -131,8 +130,14 @@ struct _LineBuf {
   char buf[N];
   uint16_t len = 0;
   void feed(Stream& s, TamaState* out) {
-    while (s.available()) {
-      char c = s.read();
+    // Drive the drain off read()'s -1 sentinel, NOT available(): on the
+    // ESP32-S3 native USB-CDC, available() can report bytes that read()
+    // then can't deliver, which would spin this loop forever and hang the
+    // whole firmware. The budget bounds work per poll (one JSON line < 1KB).
+    for (int budget = 2048; budget-- > 0; ) {
+      int ci = s.read();
+      if (ci < 0) break;
+      char c = (char)ci;
       if (c == '\n' || c == '\r') {
         if (len > 0) { buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0; }
       } else if (len < N-1) {

@@ -91,7 +91,11 @@ void bleInit(const char* deviceName) {
   // Request the biggest MTU we can get. macOS negotiates to 185 typically.
   BLEDevice::setMTU(517);
 
-  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
+  // "Just Works" pairing: encrypted + bonded, but no passkey/PIN. The random
+  // passkey-entry flow (DisplayOnly + MITM) was unusable when pairing directly
+  // from Windows — each failed retry minted a new code faster than you could
+  // type it. NoInputNoOutput negotiates Just Works, so the host pairs silently.
+  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
   BLEDevice::setSecurityCallbacks(new SecCallbacks());
 
   server = BLEDevice::createServer();
@@ -118,8 +122,8 @@ void bleInit(const char* deviceName) {
   svc->start();
 
   BLESecurity* sec = new BLESecurity();
-  sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
-  sec->setCapability(ESP_IO_CAP_OUT);
+  sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  sec->setCapability(ESP_IO_CAP_NONE);
   sec->setKeySize(16);
   sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
   sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);

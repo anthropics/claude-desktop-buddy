@@ -1,5 +1,5 @@
 #include "character.h"
-#include <M5StickCPlus.h>
+#include "compat.h"
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
@@ -138,7 +138,9 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(false)) {
+  // format-on-fail=true: a fresh device (or the new StickS3 partition) has an
+  // unformatted LittleFS partition; format it once so character storage works.
+  if (!LittleFS.begin(true)) {
     // begin() fails if already mounted — that's fine on reload
     if (!LittleFS.open("/")) {
       Serial.println("[char] LittleFS mount failed");

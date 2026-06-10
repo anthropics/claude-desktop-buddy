@@ -1,4 +1,4 @@
-#include <M5StickCPlus.h>
+#include "compat.h"
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
@@ -23,7 +23,6 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -43,7 +42,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+uint8_t brightLevel = 4;           // 0..4 → display brightness 51..255
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -90,16 +89,16 @@ uint32_t promptArrivedMs = 0;
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  M5.Imu.getAccel(&ax, &ay, &az);
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() { M5.Display.setBrightness((brightLevel + 1) * 51); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    M5.Display.wakeup();
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -109,7 +108,7 @@ static void wake() {
 bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) M5.Speaker.tone(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -305,7 +304,7 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    case 1: M5.Power.powerOff(); break;
     case 2:
     case 3:
       menuOpen = false;
@@ -356,14 +355,14 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  _onUsb = compatOnUsb();
+  compatRtcGetTime(&_clkTm);
+  compatRtcGetDate(&_clkDt);
 }
 
 static void clockUpdateOrient() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  M5.Imu.getAccel(&ax, &ay, &az);
   uint8_t lock = settings().clockRot;
   if (lock == 1) { clockOrient = 0; return; }
   if (lock == 2) {
@@ -491,7 +490,7 @@ void triggerOneShot(PersonaState s, uint32_t durMs) {
 
 bool checkShake() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  M5.Imu.getAccel(&ax, &ay, &az);
   float mag = sqrtf(ax*ax + ay*ay + az*az);
   float delta = fabsf(mag - accelBaseline);
   accelBaseline = accelBaseline * 0.95f + mag * 0.05f;
@@ -593,9 +592,9 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
+    int vBat_mV = M5.Power.getBatteryVoltage();
+    int iBat_mA = (int)M5.Power.getBatteryCurrent();
+    int vBus_mV = M5.Power.getVBUSVoltage();
     int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     bool usb = vBus_mV > 4000;
@@ -627,7 +626,7 @@ void drawInfo() {
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+    ln("  temp     %dC", compatChipTempC());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -682,8 +681,13 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
+#if defined(BOARD_STICKS3)
+    ln("M5StickS3");
+    ln("ESP32-S3 + M5PM1");
+#else
     ln("M5StickC Plus");
     ln("ESP32 + AXP192");
+#endif
   }
 }
 
@@ -724,45 +728,74 @@ static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t
 
 static void drawApproval() {
   const Palette& p = characterPalette();
-  const int AREA = 78;
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
-  spr.drawFastHLine(0, H - AREA, W, p.textDim);
 
-  spr.setTextSize(1);
-  spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(4, H - AREA + 4);
-  uint32_t waited = (millis() - promptArrivedMs) / 1000;
-  if (waited >= 10) spr.setTextColor(HOT, p.bg);
-  spr.printf("approve? %lus", (unsigned long)waited);
+  // The desktop caps prompt.hint at ~40 chars, so render it BIG (text size 2)
+  // and chunk it at 11 glyphs/line: that fills the panel with large, readable
+  // text instead of a tiny line plus a blank gap. Panel height adapts to the
+  // number of lines so there's never wasted space.
+  const char* hint = tama.promptHint;
+  int hlen = strlen(hint);
+  const int HCOLS = 17, HL = 11;        // glyphs/line and line height at size 1.25
+  int rows = (hlen + HCOLS - 1) / HCOLS;
+  if (rows > 7) rows = 7;
 
-  // Size 2 only if it fits one line (~10 chars at 12px on 135px screen)
   int toolLen = strlen(tama.promptTool);
+  bool bigTool = toolLen <= 14;         // fits one line at size 1.5
+  int toolH = bigTool ? 15 : 11;
+
+  // header(13) + tool + hint rows + button row(12) + paddings
+  int area = 4 + 13 + toolH + rows * HL + 6 + 12 + 4;
+  const int MIN_AREA = 56;
+  const int MAX_AREA = H - 72;          // keep the pet peeking up top
+  if (area < MIN_AREA) area = MIN_AREA;
+  if (area > MAX_AREA) area = MAX_AREA;
+  int TOP  = H - area;
+  int botY = H - 12;                    // baseline row for the A/B buttons
+
+  spr.fillRect(0, TOP, W, H - TOP, p.bg);
+  spr.drawFastHLine(0, TOP, W, p.textDim);
+
+  int y = TOP + 4;
+
+  // Header (small): "approve? Ns" — turns hot once it's been waiting a while.
+  spr.setTextSize(1);
+  uint32_t waited = (millis() - promptArrivedMs) / 1000;
+  spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+  spr.setCursor(4, y);
+  spr.printf("approve? %lus", (unsigned long)waited);
+  y += 13;
+
+  // Tool name as a title (size 1.5), slightly larger than the hint.
   spr.setTextColor(p.text, p.bg);
-  spr.setTextSize(toolLen <= 10 ? 2 : 1);
-  spr.setCursor(4, H - AREA + (toolLen <= 10 ? 14 : 18));
+  spr.setTextSize(bigTool ? 1.5f : 1.0f);
+  spr.setCursor(4, y);
   spr.print(tama.promptTool);
+  y += toolH;
+
+  // Hint at size 1.25 (smaller than the tool title), fixed-width chunks.
+  spr.setTextSize(1.25f);
+  spr.setTextColor(p.text, p.bg);
+  for (int off = 0; off < hlen && y <= botY - HL + 2; off += HCOLS) {
+    char seg[HCOLS + 1];
+    int n = hlen - off; if (n > HCOLS) n = HCOLS;
+    memcpy(seg, hint + off, n); seg[n] = 0;
+    spr.setCursor(2, y);
+    spr.print(seg);
+    y += HL;
+  }
   spr.setTextSize(1);
 
-  // Hint wraps at ~21 chars to two lines under the tool name
-  spr.setTextColor(p.textDim, p.bg);
-  int hlen = strlen(tama.promptHint);
-  spr.setCursor(4, H - AREA + 34);
-  spr.printf("%.21s", tama.promptHint);
-  if (hlen > 21) {
-    spr.setCursor(4, H - AREA + 42);
-    spr.printf("%.21s", tama.promptHint + 21);
-  }
-
+  // Button / status row, pinned to the bottom.
   if (responseSent) {
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(4, botY);
     spr.print("sent...");
   } else {
     spr.setTextColor(GREEN, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(4, botY);
     spr.print("A: approve");
     spr.setTextColor(HOT, p.bg);
-    spr.setCursor(W - 48, H - 12);
+    spr.setCursor(W - 48, botY);
     spr.print("B: deny");
   }
 }
@@ -936,13 +969,16 @@ void drawHUD() {
 }
 
 void setup() {
+  // USB-CDC (native USB on ESP32-S3) blocks on write when no serial monitor
+  // is attached — the TX buffer fills and Serial.print() waits forever for a
+  // host, hanging setup()/loop(). Make it non-blocking so the device runs
+  // standalone. Harmless on the StickC Plus (real UART).
+  Serial.setTxTimeoutMs(0);
   M5.begin();
   M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  M5.Speaker.setVolume(180);     // IMU auto-inits in M5.begin()
   startBt();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
+  compatLedInit();
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
@@ -987,7 +1023,6 @@ void setup() {
 
 void loop() {
   M5.update();
-  M5.Beep.update();
   t++;
   uint32_t now = millis();
 
@@ -1003,9 +1038,9 @@ void loop() {
 
   // LED: pulse on attention, otherwise off
   if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
+    compatLedSet((now / 400) % 2);
   } else {
-    digitalWrite(LED_PIN, HIGH);
+    compatLedSet(false);
   }
 
   // shake → dizzy + force scenario advance
@@ -1053,11 +1088,11 @@ void loop() {
 
   // AXP power button (left side): short-press toggles screen off.
   // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  if (M5.BtnPWR.wasClicked()) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      M5.Display.sleep();
       screenOff = true;
     }
   }
@@ -1243,7 +1278,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    M5.Display.setBrightness(8);
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1257,7 +1292,7 @@ void loop() {
   // No auto-off on USB power — clock face wants to stay visible while charging.
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+    M5.Display.sleep();
     screenOff = true;
   }
 

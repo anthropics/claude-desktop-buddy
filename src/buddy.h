@@ -8,7 +8,7 @@
 void buddyInit();
 void buddyTick(uint8_t personaState);
 void buddyInvalidate();
-class TFT_eSPI;
+#include "compat.h"
 void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState);
 void buddySetSpecies(const char* name);
 void buddySetSpeciesIdx(uint8_t idx);

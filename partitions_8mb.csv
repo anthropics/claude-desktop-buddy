@@ -1,0 +1,7 @@
+# M5StickS3 - ESP32-S3 8MB flash, single app, large LittleFS for characters.
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x5000,
+otadata,    data, ota,      0xE000,    0x2000,
+app0,       app,  ota_0,    0x10000,   0x3F0000,
+spiffs,     data, spiffs,   0x400000,  0x3F0000,
+coredump,   data, coredump, 0x7F0000,  0x10000,
