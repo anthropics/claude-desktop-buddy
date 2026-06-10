@@ -16,8 +16,8 @@ struct TamaState {
   char     lines[8][92];
   uint8_t  nLines;
   uint16_t lineGen;          // bumps when lines change — lets UI reset scroll
-  char     promptId[40];     // pending permission request ID; empty = no prompt
-  char     promptTool[20];
+  char     promptId[80];     // pending permission request ID; empty = no prompt
+  char     promptTool[24];
   char     promptHint[44];
 };
 
@@ -113,13 +113,28 @@ static void _applyJson(const char* line, TamaState* out) {
     }
     out->nLines = n;
   }
+  // New direct-hook format: {"type":"approval_request","tool":"...","summary":"..."}
+  const char* msgType = doc["type"];
+  if (msgType && strcmp(msgType, "approval_request") == 0) {
+    const char* tool    = doc["tool"];
+    const char* summary = doc["summary"];
+    strncpy(out->promptId,   "pending",        sizeof(out->promptId)-1);   out->promptId[sizeof(out->promptId)-1]=0;
+    strncpy(out->promptTool, tool    ? tool    : "", sizeof(out->promptTool)-1); out->promptTool[sizeof(out->promptTool)-1]=0;
+    strncpy(out->promptHint, summary ? summary : "", sizeof(out->promptHint)-1); out->promptHint[sizeof(out->promptHint)-1]=0;
+    out->lastUpdated = millis();
+    _lastLiveMs = millis();
+    return;
+  }
+
+  // Legacy bridge snapshot format: {"prompt":{"id":"...","tool":"...","hint":"..."}}
   JsonObject pr = doc["prompt"];
   if (!pr.isNull()) {
     const char* pid = pr["id"]; const char* pt = pr["tool"]; const char* ph = pr["hint"];
     strncpy(out->promptId,   pid ? pid : "", sizeof(out->promptId)-1);   out->promptId[sizeof(out->promptId)-1]=0;
     strncpy(out->promptTool, pt  ? pt  : "", sizeof(out->promptTool)-1); out->promptTool[sizeof(out->promptTool)-1]=0;
     strncpy(out->promptHint, ph  ? ph  : "", sizeof(out->promptHint)-1); out->promptHint[sizeof(out->promptHint)-1]=0;
-  } else {
+  } else if (!doc["total"].isNull()) {
+    // Snapshot with no prompt field means prompt was cleared by bridge
     out->promptId[0] = 0; out->promptTool[0] = 0; out->promptHint[0] = 0;
   }
   out->lastUpdated = millis();

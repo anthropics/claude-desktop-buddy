@@ -1,5 +1,9 @@
 #include "character.h"
-#include <M5StickCPlus.h>
+#ifdef BOARD_CYD
+  #include "cyd_hal.h"
+#else
+  #include <M5StickCPlus.h>
+#endif
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
@@ -138,8 +142,8 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(false)) {
-    // begin() fails if already mounted — that's fine on reload
+  if (!LittleFS.begin(true)) {
+    // begin(true) formats on first mount failure; if it still fails, bail.
     if (!LittleFS.open("/")) {
       Serial.println("[char] LittleFS mount failed");
       return false;
