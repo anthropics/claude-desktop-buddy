@@ -250,6 +250,9 @@ Stale bond? "Forget This Device" in Bluetooth settings + re-pair.
 - **[Plus2 controls](docs/controls.md)** — button map (standard +
   no-B mode), PTT dictation gesture, per-app PTT mode picker
   (Typeless / Doubao 长按 / 免按), screen-off semantics.
+- **[StickS3 voice mic](docs/sticks3-voice-mic.md)** — turn a StickS3
+  into a BLE push-to-talk dictation mic (ES8311 → BlackHole → Doubao
+  IME): firmware flash, bridge install, macOS permissions, button map.
 - **[Character packs](docs/character-packs.md)** — built-in packs
   (clawd, calico, bufo, cloudling), `manifest.json` shape, the
   pack-prep pipeline.

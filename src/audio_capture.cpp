@@ -69,6 +69,9 @@ static inline void ring_push(uint8_t b) {
 static bool s_initialized = false;
 static bool s_capturing   = false;
 static adpcm_state_t s_enc;
+static int16_t s_peak     = 0;   // decaying peak for the UI VU meter
+
+uint8_t audioCaptureLevel() { return (uint8_t)(((int32_t)s_peak * 100) / 32767); }
 
 uint32_t audioCaptureSampleRate() { return AC_SAMPLE_RATE; }
 
@@ -98,10 +101,59 @@ bool audioCaptureInit() {
     adpcm_encode_init(&s_enc);
     ringHead = ringTail = droppedBytes = 0;
     s_capturing   = false;
+
+    // Bring the ES8311 mic up ONCE here, at boot — and never end() it.
+    //
+    // Why not lazily in Start()/end() in Stop()? Because installing/uninstalling
+    // the I2S peripheral (M5.Mic.begin / M5.Mic.end) from inside the live
+    // render+BLE loop spins with interrupts off long enough to trip the TG1
+    // interrupt watchdog (rst:0x8 TG1WDT_SYS_RST) — pinned by the audioprobe.
+    // The begin/end dance only existed so the speaker could reclaim the ES8311
+    // for beeps; but the StickS3 build disables the internal speaker entirely
+    // (cfg.internal_spk=false in main.cpp), so the mic can own the codec
+    // permanently. Bringing it up at boot — before startBt(), no loop running,
+    // heap still high — is exactly the context where M5.Mic.begin succeeds.
+    // Start()/Stop() then just flip s_capturing; the DMA keeps running, which
+    // also removes warm-up latency on the first PTT chunk.
+    auto cfg = M5.Mic.config();
+    cfg.sample_rate = AC_SAMPLE_RATE;
+    M5.Mic.config(cfg);
+    if (!M5.Mic.begin()) {
+        Serial.println("[audio] M5.Mic.begin FAILED");
+        heap_caps_free(adpcmRing);
+        adpcmRing = nullptr;
+        return false;
+    }
+
+    // PRIME the mic here, at boot, BEFORE any load — critical.
+    //
+    // M5Unified's Mic_Class::record() calls begin() internally every time, and
+    // begin() only fast-returns when _rec_sample_rate already matches. But the
+    // initial begin() above (_task_running was false) takes a code path that
+    // NEVER sets _rec_sample_rate — it stays 0. So the FIRST record() at
+    // runtime sees 0 != 16000, falls into begin()'s slow path and calls end()
+    // → i2s_driver_uninstall + a full I2S re-install. That uninstall spins with
+    // interrupts off long enough to trip the TG1 interrupt watchdog when the
+    // render+BLE loop is live (rst:0x8 TG1WDT_SYS_RST — exactly what crashed
+    // the first pump). Doing a few throwaway record()s now forces that one-time
+    // end()+reinstall while we're still single-threaded at boot (safe, like the
+    // isolated probe), syncing _rec_sample_rate. Afterwards every runtime
+    // record() hits begin()'s fast-return and never touches the I2S driver.
+    {
+        // ONE record only. The first record() triggers begin()'s slow path
+        // (end()+reinstall) because _rec_sample_rate is unset — but at this
+        // instant nothing is in-flight, so end() finds the mic_task idle and
+        // exits cleanly (no hang). Piling on more records here is what wedged
+        // setup() before: the 2nd record's end() hit the 1st record's in-flight
+        // DMA and the task never exited. So: one record, then drain it fully
+        // (bounded) before returning, leaving nothing queued.
+        static int16_t prime[S3_CHUNK];
+        M5.Mic.record(prime, S3_CHUNK, AC_SAMPLE_RATE);
+        for (int i = 0; i < 60 && M5.Mic.isRecording(); i++) delay(5);
+    }
+
     s_initialized = true;
-    // Mic is brought up lazily in Start() so the speaker stays available for
-    // beeps when not dictating (mic & speaker can't share the ES8311 at once).
-    Serial.printf("[audio] StickS3 ES8311 capture ready @ %d Hz\n", AC_SAMPLE_RATE);
+    Serial.printf("[audio] StickS3 ES8311 mic up + primed @ %d Hz (always-on)\n", AC_SAMPLE_RATE);
     return true;
 }
 
@@ -109,17 +161,9 @@ void audioCaptureStart() {
     if (!s_initialized) return;
     ringHead = ringTail = droppedBytes = 0;
     adpcm_encode_init(&s_enc);
-
-    // ES8311 mic and speaker are mutually exclusive — release the speaker.
-    M5.Speaker.end();
-    auto cfg = M5.Mic.config();
-    cfg.sample_rate = AC_SAMPLE_RATE;
-    M5.Mic.config(cfg);
-    M5.Mic.begin();
-
-    // The first 2 encodes (enc trails submit by 2) read buffers not yet filled
-    // by DMA — zero the pool so a fresh utterance starts with ~25ms of silence
-    // rather than the previous session's stale tail.
+    // Mic DMA is already running (begun at boot). Just zero the encode pool so
+    // a fresh utterance starts with ~25ms of silence rather than a stale tail,
+    // reset the submit/encode indices, and arm the pump.
     memset(s_recPool, 0, sizeof(s_recPool));
     s_recIdx = 2;
     s_encIdx = 0;
@@ -127,15 +171,17 @@ void audioCaptureStart() {
 }
 
 void audioCaptureStop() {
+    // Leave the mic running (see audioCaptureInit) — just stop draining it into
+    // the ring. The DMA buffers recycle harmlessly until the next Start().
     s_capturing = false;
-    // Release the mic and hand the ES8311 back to the speaker for beeps.
-    M5.Mic.end();
-    M5.Speaker.begin();
+    s_peak = 0;
 }
 
 void audioCapturePump() {
     if (!s_initialized || !s_capturing) return;
     if (!M5.Mic.isEnabled()) return;
+
+    s_peak -= s_peak >> 3;   // VU fall-off (~200 ms time constant at loop rate)
 
     // Submit as many chunks as the queue accepts this tick; encode each
     // freshly-completed buffer into the ring. Bounded by S3_NBUF so a single
@@ -146,6 +192,10 @@ void audioCapturePump() {
 
         // record() returned true → buffer at s_encIdx (2 behind) is now filled.
         int16_t* done = s_recPool[s_encIdx];
+        for (size_t i = 0; i < S3_CHUNK; i++) {
+            int16_t a = done[i] < 0 ? -done[i] : done[i];
+            if (a > s_peak) s_peak = a;
+        }
         uint8_t local[S3_CHUNK / 2];   // 100 ADPCM bytes per 200 samples
         size_t enc = adpcm_encode(&s_enc, done, S3_CHUNK, local);
         for (size_t i = 0; i < enc; i++) ring_push(local[i]);

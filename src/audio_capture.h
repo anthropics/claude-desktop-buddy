@@ -39,3 +39,8 @@ void audioCapturePump();
 
 // Returns true while a capture session is active (after Start, before Stop).
 bool audioCaptureIsCapturing();
+
+// Decaying peak level of the most recent captured audio, 0..100 (% of full
+// scale). Drives the on-screen VU meter; 100 ≈ clipping. Always 0 on the
+// Plus2 PDM backend (no UI consumer there).
+uint8_t audioCaptureLevel();
