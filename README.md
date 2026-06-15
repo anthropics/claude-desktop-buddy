@@ -22,10 +22,22 @@ waiting, and lets you approve or deny right from the device.
 
 ## Hardware
 
-The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+The firmware targets ESP32 with the Arduino framework and supports two boards:
+
+| Board | MCU | Notes |
+|-------|-----|-------|
+| **M5StickC Plus** | ESP32 + AXP192 PMIC | Original target; 135×240 ST7789, built-in IMU, RTC, speaker, 2 buttons |
+| **CYD (ESP32-2432S028R)** | ESP32 | "Cheap Yellow Display"; 240×320 ILI9341, XPT2046 touch, 1 physical button + 2 virtual |
+
+Build for a specific board:
+
+```bash
+pio run -e m5stickc-plus -t upload   # M5StickC Plus
+pio run -e cyd         -t upload   # CYD (ESP32-2432S028R)
+```
+
+Any ESP32 with an SPI display can be ported by adding a new HAL header (see
+`src/cyd_hal.h` as a reference) and a new `[env:…]` in `platformio.ini`.
 
 ## Flashing
 

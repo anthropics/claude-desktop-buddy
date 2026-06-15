@@ -113,6 +113,7 @@ static void _applyJson(const char* line, TamaState* out) {
     }
     out->nLines = n;
   }
+  // Legacy bridge snapshot format: {"prompt":{"id":"...","tool":"...","hint":"..."}}
   JsonObject pr = doc["prompt"];
   if (!pr.isNull()) {
     const char* pid = pr["id"]; const char* pt = pr["tool"]; const char* ph = pr["hint"];

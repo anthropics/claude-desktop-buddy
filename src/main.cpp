@@ -1,4 +1,10 @@
-#include <M5StickCPlus.h>
+#ifdef BOARD_CYD
+  #include "cyd_hal.h"
+  TFT_eSPI  _cyd_tft;
+  CydHal    M5;
+#else
+  #include <M5StickCPlus.h>
+#endif
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
@@ -23,7 +29,18 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
+#ifdef BOARD_CYD
+const int LED_PIN = CYD_LED_R;   // red LED, active-low
+#else
 const int LED_PIN = 10;          // red LED, active-low
+#endif
+
+// Where to place the 135×240 sprite on the physical screen
+#ifdef BOARD_CYD
+  #define SPR_PUSH() spr.pushSprite(CYD_SPR_X, CYD_SPR_Y)
+#else
+  #define SPR_PUSH() spr.pushSprite(0, 0)
+#endif
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -53,7 +70,7 @@ uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
 uint8_t msgScroll = 0;
 uint16_t lastLineGen = 0;
-char     lastPromptId[40] = "";
+char     lastPromptId[80] = "";
 uint32_t lastInteractMs = 0;
 bool     dimmed = false;
 bool     screenOff = false;
@@ -968,17 +985,17 @@ void setup() {
     if (ownerName()[0]) {
       char line[40];
       snprintf(line, sizeof(line), "%s's", ownerName());
-      spr.setTextColor(p.text, p.bg);   spr.drawString(line, W/2, H/2 - 12);
-      spr.setTextColor(p.body, p.bg);   spr.drawString(petName(), W/2, H/2 + 12);
+      spr.setTextColor(p.text, p.bg);   spr.drawString(line, CX, H/2 - 12);
+      spr.setTextColor(p.body, p.bg);   spr.drawString(petName(), CX, H/2 + 12);
     } else {
       // First boot, no owner pushed yet — say hi.
-      spr.setTextColor(p.body, p.bg);   spr.drawString("Hello!", W/2, H/2 - 12);
+      spr.setTextColor(p.body, p.bg);   spr.drawString("Hello!", CX, H/2 - 12);
       spr.setTextSize(1);
       spr.setTextColor(p.textDim, p.bg);
-      spr.drawString("a buddy appears", W/2, H/2 + 12);
+      spr.drawString("a buddy appears", CX, H/2 + 12);
     }
     spr.setTextDatum(TL_DATUM); spr.setTextSize(1);
-    spr.pushSprite(0, 0);
+    SPR_PUSH();
     delay(1800);
   }
 
@@ -1035,6 +1052,13 @@ void loop() {
       applyDisplayMode();
       characterInvalidate();
       if (buddyMode) buddyInvalidate();
+#ifdef BOARD_CYD
+      M5.setPromptMode(true);
+#endif
+    } else {
+#ifdef BOARD_CYD
+      M5.setPromptMode(false);
+#endif
     }
   }
 
@@ -1076,11 +1100,15 @@ void loop() {
   }
   if (M5.BtnA.wasReleased()) {
     if (!btnALong && !swallowBtnA) {
-      if (inPrompt) {
-        char cmd[96];
-        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
-        sendCmd(cmd);
+      if (inPrompt && millis() - promptArrivedMs > 500) {
+        char _permCmd[160];
+        snprintf(_permCmd, sizeof(_permCmd),
+          "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
+        sendCmd(_permCmd);
         responseSent = true;
+#ifdef BOARD_CYD
+        M5.setPromptMode(false);
+#endif
         uint32_t tookS = (millis() - promptArrivedMs) / 1000;
         statsOnApproval(tookS);
         beep(2400, 60);
@@ -1113,9 +1141,6 @@ void loop() {
       char cmd[96];
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
       sendCmd(cmd);
-      responseSent = true;
-      statsOnDenial();
-      beep(600, 60);
     } else if (resetOpen) {
       beep(2400, 30);
       applyReset(resetSel);
@@ -1226,7 +1251,7 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
-    spr.pushSprite(0, 0);
+    SPR_PUSH();
   }
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
