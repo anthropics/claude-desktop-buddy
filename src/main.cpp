@@ -1,6 +1,7 @@
 #include <M5StickCPlus.h>
 #include <LittleFS.h>
 #include <stdarg.h>
+#include <esp_mac.h>
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"

@@ -41,7 +41,7 @@ static void rxPush(const uint8_t* p, size_t n) {
 
 class RxCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
-    std::string v = c->getValue();
+    std::string v = c->getValue().c_str();
     if (!v.empty()) rxPush((const uint8_t*)v.data(), v.size());
   }
 };
@@ -91,7 +91,7 @@ void bleInit(const char* deviceName) {
   // Request the biggest MTU we can get. macOS negotiates to 185 typically.
   BLEDevice::setMTU(517);
 
-  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
+  BLESecurity::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
   BLEDevice::setSecurityCallbacks(new SecCallbacks());
 
   server = BLEDevice::createServer();
