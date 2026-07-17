@@ -61,6 +61,12 @@ first connect; grant it.
 
 Once paired, the bridge auto-reconnects whenever both sides are awake.
 
+> **Using Claude Code (VSCode) instead of Claude Desktop?** The Hardware
+> Buddy window only talks to Claude Desktop. See
+> [bridges/claude-code-vscode](bridges/claude-code-vscode) for a small
+> standalone bridge that gets the same status reactions and button
+> approvals working with Claude Code.
+
 If discovery isn't finding the stick:
 
 - Make sure it's awake (any button press)
