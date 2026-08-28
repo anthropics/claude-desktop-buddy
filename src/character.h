@@ -23,8 +23,16 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // Peek mode renders the GIF at half scale, centered in the info-panel
 // header strip; off renders full-size centered in the upper home area.
 // Adaptive to actual canvas height — no padding required in source art.
-void characterSetPeek(bool peek);
-class TFT_eSPI;
+// Peek levels. The pet shares the screen with something else and renders
+// smaller, but how much smaller depends on who it is sharing with: the info
+// and pet pages repaint from y=70, the clock face from y=98, so the clock can
+// afford a noticeably larger pet than a single shared setting allowed.
+enum : uint8_t { PEEK_OFF = 0, PEEK_HALF = 1, PEEK_3Q = 2 };
+// Returns true when the level actually changed, which also means it has
+// already invalidated -- callers must not invalidate a second time, since
+// every invalidate reopens the GIF.
+bool characterSetPeek(uint8_t level);
+#include "compat.h"
 void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
 
 const Palette& characterPalette();

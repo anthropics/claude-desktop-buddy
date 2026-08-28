@@ -1,5 +1,5 @@
 #include "character.h"
-#include <M5StickCPlus.h>
+#include "compat.h"
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
@@ -33,6 +33,12 @@ static uint8_t stateCount[N_STATES];
 static uint8_t stateRot[N_STATES];
 static uint8_t gifTotal = 0;
 static uint8_t curState = 0xFF;
+// Which state's art is actually on screen. Equal to curState for a complete
+// pack; for a partial one it points at the substitute, so the frame and
+// rotation bookkeeping below indexes a state that really has files. Indexing
+// by curState there would divide by a zero count.
+static uint8_t drawState = 0xFF;
+static const uint8_t ST_IDLE = 1;   // index into STATE_NAMES
 
 static AnimatedGIF gif;
 static File        gifFile;
@@ -40,18 +46,31 @@ static int         gifX = 0, gifY = 0, gifW = 0, gifH = 0;
 // Peek mode pins the GIF bottom to the info-panel top (y=70) so the pet
 // sits on the panel edge regardless of canvas height. Home mode centers
 // in the upper 140px. No padding assumed in the source art.
-static const int   PEEK_TOP = 70;
-static bool        peekMode = false;
+// Per-level peek window heights: how far down the pet may draw before the
+// panel underneath repaints over it. Info and pet pages clear from y=70, the
+// clock face from y=98.
+static const int   PEEK_TOP_HALF = 70;
+static const int   PEEK_TOP_3Q   = 96;
+static inline int  peekTop(uint8_t lvl) {
+  return lvl == PEEK_3Q ? PEEK_TOP_3Q : PEEK_TOP_HALF;
+}
+static uint8_t     peekMode = PEEK_OFF;
 // Draw target — defaults to the sprite; characterRenderTo() retargets to
 // M5.Lcd for the landscape clock (both inherit TFT_eSPI).
 static TFT_eSPI*   _tgt = &spr;
-// Peek mode renders at half scale (2:1 nearest-neighbor in gifDrawCb) so
-// the whole pet fits the 70px window instead of cropping the top.
+// 1:2 is a bare bit-shift and so the cheapest downscale there is, which is
+// why it was the only one. It costs the clock face three quarters of the pet's
+// area though, so that one now gets 3:4 at the price of a multiply per pixel.
+static void gifScaled(int& w, int& h) {
+  if (peekMode == PEEK_3Q)        { w = gifW * 3 / 4; h = gifH * 3 / 4; }
+  else if (peekMode == PEEK_HALF) { w = gifW / 2;     h = gifH / 2; }
+  else                            { w = gifW;         h = gifH; }
+}
 static void gifPlace() {
-  int outW = peekMode ? gifW / 2 : gifW;
-  int outH = peekMode ? gifH / 2 : gifH;
+  int outW, outH;
+  gifScaled(outW, outH);
   gifX = (spr.width() - outW) / 2;
-  gifY = peekMode ? (PEEK_TOP - outH) / 2 : (140 - outH) / 2;
+  gifY = peekMode ? (peekTop(peekMode) - outH) / 2 : (140 - outH) / 2;
 }
 static uint32_t    nextFrameAt = 0;
 static uint32_t    animPauseUntil = 0;
@@ -59,6 +78,7 @@ static uint32_t    variantStartedMs = 0;
 static const uint32_t VARIANT_DWELL_MS = 5000;
 static const uint32_t ANIM_PAUSE_MS    = 800;
 static bool        gifOpen = false;
+static uint16_t    framesThisPlay = 0;   // frames drawn since open/reset
 
 static uint16_t parseHexColor(const char* s, uint16_t fallback) {
   if (!s) return fallback;
@@ -114,13 +134,29 @@ static void gifDrawCb(GIFDRAW* d) {
     _tgt->drawPixel(x, y, (hasT && idx == t) ? pal.bg : pal16[idx]);
   };
 
-  if (peekMode) {
+  if (peekMode == PEEK_HALF) {
     if (srcY & 1) return;
     int y = gifY + (srcY >> 1);
-    if (y < 0 || y >= PEEK_TOP) return;
+    if (y < 0 || y >= PEEK_TOP_HALF) return;
     int x0 = gifX + (d->iX >> 1);
     int w  = d->iWidth >> 1;
     for (int i = 0; i < w; i++) put(x0 + i, y, src[i << 1]);
+    return;
+  }
+  if (peekMode == PEEK_3Q) {
+    // 3:4 nearest-neighbour: keep three source rows and columns out of every
+    // four. srcY % 4 == 1 is the row whose destination duplicates its
+    // predecessor's, so that is the one to drop.
+    if ((srcY & 3) == 1) return;
+    int y = gifY + srcY * 3 / 4;
+    if (y < 0 || y >= PEEK_TOP_3Q) return;
+    int x0 = gifX + d->iX * 3 / 4;
+    int w  = d->iWidth * 3 / 4;
+    for (int i = 0; i < w; i++) {
+      int si = i * 4 / 3;
+      if (si >= d->iWidth) break;
+      put(x0 + i, y, src[si]);
+    }
     return;
   }
 
@@ -138,7 +174,9 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(false)) {
+  // format-on-fail=true: a fresh device (or the new StickS3 partition) has an
+  // unformatted LittleFS partition; format it once so character storage works.
+  if (!LittleFS.begin(true)) {
     // begin() fails if already mounted — that's fine on reload
     if (!LittleFS.open("/")) {
       Serial.println("[char] LittleFS mount failed");
@@ -252,8 +290,10 @@ const Palette& characterPalette() { return pal; }
 // animation runs even when characterTick() is bypassed.
 void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
   if (!gifOpen) return;   // caller opens via characterSetState(activeState)
-  TFT_eSPI* prevT = _tgt; bool prevP = peekMode; int px = gifX, py = gifY;
-  _tgt = tgt; peekMode = true;
+  TFT_eSPI* prevT = _tgt; uint8_t prevP = peekMode; int px = gifX, py = gifY;
+  // Landscape clock draws into a small corner: half scale, and the gifW/4
+  // offsets below assume it.
+  _tgt = tgt; peekMode = PEEK_HALF;
   gifX = cx - gifW / 4;
   gifY = cy - gifH / 4;
   uint32_t now = millis();
@@ -265,10 +305,11 @@ void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
   _tgt = prevT; peekMode = prevP; gifX = px; gifY = py;
 }
 
-void characterSetPeek(bool peek) {
-  if (peekMode == peek) return;
-  peekMode = peek;
+bool characterSetPeek(uint8_t level) {
+  if (peekMode == level) return false;
+  peekMode = level;
   characterInvalidate();
+  return true;
 }
 
 void characterClose() {
@@ -276,6 +317,7 @@ void characterClose() {
   loaded = false;
   textMode = false;
   curState = 0xFF;
+  drawState = 0xFF;
 }
 
 void characterInvalidate() {
@@ -307,12 +349,29 @@ void characterSetState(uint8_t s) {
   animPauseUntil = 0;
   curState = s;
 
-  if (stateCount[s] == 0) {
-    Serial.printf("[char] no gif for state %d\n", s);
-    return;
+  // A pack need not cover all seven states. Missing ones used to close the
+  // open GIF and open nothing, and the renderer draws nothing without one --
+  // so the pet froze on whatever frame happened to be in the sprite, which
+  // reads as a hang rather than as a state with no art. Substitute instead:
+  // idle if the pack has it, otherwise the first state that does.
+  uint8_t draw = s;
+  if (stateCount[draw] == 0) {
+    draw = ST_IDLE;
+    if (stateCount[draw] == 0) {
+      draw = 0xFF;
+      for (uint8_t i = 0; i < N_STATES; i++) {
+        if (stateCount[i]) { draw = i; break; }
+      }
+    }
+    if (draw == 0xFF) {
+      Serial.printf("[char] state %d missing and pack has no frames at all\n", s);
+      return;
+    }
+    Serial.printf("[char] state %d missing, falling back to %d\n", s, draw);
   }
+  drawState = draw;
 
-  uint8_t idx = stateStart[s] + stateRot[s];
+  uint8_t idx = stateStart[draw] + stateRot[draw];
   char full[80];
   snprintf(full, sizeof(full), "%s/%s", basePath, gifPaths[idx]);
   if (gif.open(full, gifOpenCb, gifCloseCb, gifReadCb, gifSeekCb, gifDrawCb)) {
@@ -320,8 +379,17 @@ void characterSetState(uint8_t s) {
     gifW = gif.getCanvasWidth();
     gifH = gif.getCanvasHeight();
     gifPlace();
-    spr.fillSprite(pal.bg);   // bias upward, leave room for HUD
+    // Clear only when the pet lands somewhere new. The GIFs are unoptimised
+    // full-frame, so a same-size, same-place animation repaints every pixel it
+    // owns and a wipe would just be a visible blink on every state change.
+    // A different size or origin does leave stale pixels, so that still wipes.
+    static int lastX = -1, lastY = -1, lastW = -1, lastH = -1;
+    if (gifX != lastX || gifY != lastY || gifW != lastW || gifH != lastH) {
+      spr.fillSprite(pal.bg);
+      lastX = gifX; lastY = gifY; lastW = gifW; lastH = gifH;
+    }
     nextFrameAt = 0;
+    framesThisPlay = 0;
     variantStartedMs = millis();
     Serial.printf("[char] %s: %dx%d @ (%d,%d) heap=%u\n",
       gifPaths[idx], gifW, gifH, gifX, gifY, ESP.getFreeHeap());
@@ -379,9 +447,21 @@ void characterTick() {
     // possibly starving the BT controller. The sprite already holds the
     // last frame; just stop ticking. Multi-gif states (idle rotation)
     // still advance after a brief pause.
-    if (stateCount[curState] == 1) {
-      gif.close();
-      gifOpen = false;
+    if (stateCount[drawState] == 1) {
+      // Loop in place rather than freezing. What made freezing attractive was
+      // the cost of *reopening* the file -- a LittleFS open plus header decode
+      // -- but gif.reset() only rewinds the decoder, which is exactly what the
+      // multi-variant path below already does inside its dwell window. Looping
+      // here means a state needs only one file to animate continuously, with
+      // no reopen, no full-sprite clear and no pause between passes.
+      if (framesThisPlay <= 1) {   // nothing to animate: a still image
+        gif.close();
+        gifOpen = false;
+        return;
+      }
+      gif.reset();
+      framesThisPlay = 0;
+      nextFrameAt = now;
       return;
     }
     // Multi-variant: loop the same GIF until the dwell window elapses, then
@@ -393,9 +473,10 @@ void characterTick() {
       return;
     }
     gif.close(); gifOpen = false;
-    stateRot[curState] = (stateRot[curState] + 1) % stateCount[curState];
+    stateRot[drawState] = (stateRot[drawState] + 1) % stateCount[drawState];
     animPauseUntil = now + ANIM_PAUSE_MS;
     return;
   }
+  framesThisPlay++;
   nextFrameAt = now + (delayMs > 0 ? delayMs : 100);
 }

@@ -11,10 +11,11 @@ fun little hardware devices that integrate with Claude.
 > **[REFERENCE.md](REFERENCE.md)** for the wire protocol: Nordic UART
 > Service UUIDs, JSON schemas, and the folder push transport.
 
-As an example, we built a desk pet on ESP32 that lives off permission
-approvals and interaction with Claude. It sleeps when nothing's happening,
-wakes when sessions start, gets visibly impatient when an approval prompt is
-waiting, and lets you approve or deny right from the device.
+As an example, this is a desk pet that runs on M5Stack stick devices — the
+ESP32 **M5StickC Plus** and the ESP32-S3 **M5StickS3**. It lives off
+permission approvals and interaction with Claude: it sleeps when nothing's
+happening, wakes when sessions start, gets visibly impatient when an approval
+prompt is waiting, and lets you approve or deny right from the device.
 
 <p align="center">
   <img src="docs/device.jpg" alt="M5StickC Plus running the buddy firmware" width="500">
@@ -22,25 +23,105 @@ waiting, and lets you approve or deny right from the device.
 
 ## Hardware
 
-The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+This fork runs on **two boards from one codebase**, built on
+[M5Unified](https://github.com/m5stack/M5Unified), which auto-detects the
+board at runtime:
+
+| Board | MCU / peripherals | PlatformIO env |
+| --- | --- | --- |
+| **M5StickC Plus** (original) | ESP32 + AXP192 + MPU6886 | `m5stickc-plus` |
+| **M5StickS3** | ESP32-S3 + M5PM1 + BMI270 + ST7789P3 + ES8311 | `m5stack-sticks3` |
+
+The upstream firmware depended on the board-specific `M5StickCPlus` library,
+which doesn't support the ESP32-S3. Migrating to M5Unified adds M5StickS3
+support while keeping the original StickC Plus working — see
+[What this fork changes](#what-this-fork-changes).
+
+<p align="center">
+  <img src="docs/sticks3.png" alt="M5Stack M5StickS3 (ESP32-S3)" width="380">
+</p>
+
+## What this fork changes
+
+This fork ports the firmware to the **M5StickS3 (ESP32-S3)** while keeping the
+original M5StickC Plus working.
+
+**Board / build**
+
+- Migrated from the `M5StickCPlus` library to **M5Unified** (supports both
+  boards, auto-detects at runtime).
+- Added the `m5stack-sticks3` PlatformIO environment plus an 8MB partition
+  table (`partitions_8mb.csv`) with a large LittleFS region for characters.
+- New [`src/compat.h`](src/compat.h) shim maps the legacy APIs the code used
+  onto M5Unified / M5GFX:
+  - `TFT_eSprite` → `M5Canvas`; render targets → `lgfx::LGFXBase`
+  - `M5.Axp.*` → `M5.Power.*`; `M5.Imu.getAccelData` → `getAccel`;
+    `M5.Beep` → `M5.Speaker`
+  - software RTC over the ESP32 system clock (the StickS3 has no RTC chip)
+  - onboard-LED calls are no-ops on the StickS3 (it has no user LED — GPIO10
+    there is the Grove port)
+
+**Bug fixes surfaced on the S3**
+
+- `dataPoll` no longer hangs the firmware: the serial drain is now driven by
+  `read()`'s `-1` sentinel instead of `available()`, which on the S3's native
+  USB-CDC could report bytes `read()` can't deliver and spin forever.
+- `Serial.setTxTimeoutMs(0)` so USB-CDC writes don't block when no serial
+  monitor is attached.
+- `LittleFS.begin(true)` formats a fresh S3 partition on first boot.
+
+**Behavior**
+
+- BLE pairing uses **LE Secure Connections with passkey entry**, as
+  REFERENCE.md specifies: the stick displays a six-digit code and the host
+  prompts for it. An earlier revision of this fork had downgraded it to Just
+  Works over a Windows pairing problem; that also gave up MITM protection on
+  a link carrying transcript snippets and tool-call hints, and on macOS the
+  passkey flow negotiates fine.
+- Approval screen redesigned: the panel sizes to its content and shows the
+  tool name + command in larger, readable text.
+- **The Grove port is left unpowered on both boards.** Nothing here drives
+  it, and `M5.begin()` otherwise runs the 5V boost converter unloaded off the
+  battery — enough on the StickS3 to cancel out the charge current entirely.
+  If you attach a Grove peripheral, drop the `cfg.output_power = false` line
+  in `setup()`.
 
 ## Flashing
 
 Install
-[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
-then:
+[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/).
+The repo defines two build environments (default: `m5stack-sticks3`); select
+your board with `-e`:
 
 ```bash
-pio run -t upload
+# M5StickS3 (ESP32-S3)
+pio run -e m5stack-sticks3 -t upload
+
+# M5StickC Plus (original ESP32)
+pio run -e m5stickc-plus -t upload
 ```
 
-If you're starting from a previously-flashed device, wipe it first:
+Add `--upload-port COM6` (Windows) or `--upload-port /dev/ttyACM0`
+(Linux/macOS) if auto-detection picks the wrong port.
+
+**M5StickS3:** no button presses needed — the S3 has no DTR/RTS reset line,
+so `scripts/sticks3_upload.py` drives download mode over a 1200-baud touch
+and boots the board again with a watchdog reset. Close any serial monitor
+first; a process holding the port makes esptool fail partway through the
+write with an error that points nowhere near the cause.
+
+If a board is running something that ignores the touch (factory UIFlow2, or
+an image whose USB never came up), enter download mode by hand: **hold the
+side button about two seconds and release** — the green LED blinks when it
+takes.
+
+See [docs/sticks3.md](docs/sticks3.md) for the board's other differences and
+for what the desktop bridge actually puts on the wire.
+
+To wipe a previously-flashed device first:
 
 ```bash
-pio run -t erase && pio run -t upload
+pio run -e m5stack-sticks3 -t erase && pio run -e m5stack-sticks3 -t upload
 ```
 
 Once running, you can also wipe everything from the device itself: **hold A
@@ -149,6 +230,9 @@ If you're iterating on a character and would rather skip the BLE round-trip,
 | `dizzy`     | you shook the stick         | spiral eyes, wobbling       |
 | `heart`     | approved in under 5s        | floating hearts             |
 
+> On the **M5StickS3** the attention **LED** doesn't apply — that board has no
+> user LED. Everything else behaves the same.
+
 ## Project layout
 
 ```
@@ -161,7 +245,9 @@ src/
   data.h         — wire protocol, JSON parse
   xfer.h         — folder push receiver
   stats.h        — NVS-backed stats, settings, owner, species choice
+  compat.h       — M5Unified shim (display/RTC/power/LED across both boards)
 characters/      — example GIF character packs
+partitions_8mb.csv — M5StickS3 (8MB) flash layout
 tools/           — generators and converters
 ```
 

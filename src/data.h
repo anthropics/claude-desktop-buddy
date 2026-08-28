@@ -11,14 +11,17 @@ struct TamaState {
   bool     recentlyCompleted;
   uint32_t tokensToday;
   uint32_t lastUpdated;
-  char     msg[24];
+  char     msg[265];   // same 88-char ceiling as an entry
   bool     connected;
-  char     lines[8][92];
+  // The desktop slices entries to 88 JS characters (`P` in its bridge), so
+  // the worst case on the wire is 88 CJK characters at 3 UTF-8 bytes each.
+  // Anything smaller silently clips prose; 160 cut mid-sentence at ~53.
+  char     lines[8][265];
   uint8_t  nLines;
   uint16_t lineGen;          // bumps when lines change — lets UI reset scroll
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
-  char     promptHint[44];
+  char     promptHint[128];  // wrapped across several lines on the approval panel
 };
 
 // ---------------------------------------------------------------------------
@@ -65,6 +68,18 @@ inline const char* dataScenarioName() {
 // Set true once the bridge sends a time sync — until then the RTC may
 // hold whatever was on the coin cell (or 2000-01-01 if it lost power).
 static bool _rtcValid = false;
+// Copy into a fixed buffer, clamping on a UTF-8 sequence boundary. A
+// byte-exact cut lands mid-character on anything non-latin: it loses the
+// character it split and leaves orphaned continuation bytes behind for the
+// renderer to draw as garbage.
+template<size_t N>
+inline void _copyUtf8(char (&dst)[N], const char* src) {
+  size_t len = src ? strnlen(src, N - 1) : 0;
+  while (len > 0 && ((unsigned char)src[len] & 0xC0) == 0x80) len--;
+  if (len) memcpy(dst, src, len);
+  dst[len] = 0;
+}
+
 inline bool dataRtcValid() { return _rtcValid; }
 
 static void _applyJson(const char* line, TamaState* out) {
@@ -81,8 +96,7 @@ static void _applyJson(const char* line, TamaState* out) {
     RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
     RTC_DateTypeDef dt = { (uint8_t)lt.tm_wday, (uint8_t)(lt.tm_mon + 1),
                            (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
-    M5.Rtc.SetTime(&tm);
-    M5.Rtc.SetDate(&dt);
+    compatRtcSet(&tm, &dt);
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
@@ -98,14 +112,13 @@ static void _applyJson(const char* line, TamaState* out) {
   if (doc["tokens"].is<uint32_t>()) statsOnBridgeTokens(bridgeTokens);
   out->tokensToday = doc["tokens_today"] | out->tokensToday;
   const char* m = doc["msg"];
-  if (m) { strncpy(out->msg, m, sizeof(out->msg)-1); out->msg[sizeof(out->msg)-1]=0; }
+  if (m) _copyUtf8(out->msg, m);
   JsonArray la = doc["entries"];
   if (!la.isNull()) {
     uint8_t n = 0;
     for (JsonVariant v : la) {
       if (n >= 8) break;
-      const char* s = v.as<const char*>();
-      strncpy(out->lines[n], s ? s : "", 91); out->lines[n][91]=0;
+      _copyUtf8(out->lines[n], v.as<const char*>());
       n++;
     }
     if (n != out->nLines || (n > 0 && strcmp(out->lines[n-1], out->msg) != 0)) {
@@ -126,23 +139,45 @@ static void _applyJson(const char* line, TamaState* out) {
   _lastLiveMs = millis();
 }
 
+// A whole snapshot has to fit here in one piece: 8 entries of up to 88
+// characters each, and a CJK character is 3 UTF-8 bytes, so the transcript
+// alone reaches 8 * 264 = 2112 bytes before msg, prompt and the JSON syntax
+// around them. At 1024 every heartbeat from a non-latin session overran the
+// buffer and was thrown away by the parser, which looked exactly like the
+// bridge going quiet.
 template<size_t N>
 struct _LineBuf {
   char buf[N];
   uint16_t len = 0;
+  bool over = false;      // this line already ran past the buffer
   void feed(Stream& s, TamaState* out) {
-    while (s.available()) {
-      char c = s.read();
+    // Drive the drain off read()'s -1 sentinel, NOT available(): on the
+    // ESP32-S3 native USB-CDC, available() can report bytes that read()
+    // then can't deliver, which would spin this loop forever and hang the
+    // whole firmware. The budget bounds work per poll (one JSON line < 1KB).
+    for (int budget = 2048; budget-- > 0; ) {
+      int ci = s.read();
+      if (ci < 0) break;
+      char c = (char)ci;
       if (c == '\n' || c == '\r') {
-        if (len > 0) { buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0; }
+        if (over) {
+          // Parsing the truncated head just fails, and the failure discards
+          // the entire snapshot -- counts, msg, prompt -- with nothing said.
+          Serial.println("[data] snapshot exceeded line buffer, dropped");
+          over = false; len = 0;
+        } else if (len > 0) {
+          buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0;
+        }
       } else if (len < N-1) {
         buf[len++] = c;
+      } else {
+        over = true;
       }
     }
   }
 };
 
-static _LineBuf<1024> _usbLine, _btLine;
+static _LineBuf<4096> _usbLine, _btLine;
 
 inline void dataPoll(TamaState* out) {
   uint32_t now = millis();
@@ -164,13 +199,18 @@ inline void dataPoll(TamaState* out) {
     if (c < 0) break;
     _lastBtByteMs = millis();
     if (c == '\n' || c == '\r') {
-      if (_btLine.len > 0) {
+      if (_btLine.over) {
+        Serial.println("[data] BLE snapshot exceeded line buffer, dropped");
+        _btLine.over = false; _btLine.len = 0;
+      } else if (_btLine.len > 0) {
         _btLine.buf[_btLine.len] = 0;
         if (_btLine.buf[0] == '{') _applyJson(_btLine.buf, out);
         _btLine.len = 0;
       }
     } else if (_btLine.len < sizeof(_btLine.buf) - 1) {
       _btLine.buf[_btLine.len++] = (char)c;
+    } else {
+      _btLine.over = true;
     }
   }
 

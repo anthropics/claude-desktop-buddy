@@ -5,13 +5,19 @@ across all states, so the character is the same size in every animation.
 Writes to characters/<name>/ ready to drag onto the Hardware Buddy window.
 
 Usage:
-  python3 tools/prep_character.py <character-dir-or-zip>
+  python3 tools/prep_character.py <character-dir-or-zip> [--width N]
+
+--width sets the on-device sprite width, default 96. The firmware centres
+whatever it is given -- gifX = (135 - w) / 2, gifY = (140 - h) / 2 -- and peek
+mode halves it into a 70px window, so anything up to 135x140 renders correctly
+and 96 leaves most of the pet area empty. Wider costs bytes roughly with the
+pixel count, against a 1.8MB budget for the whole pack.
 """
 import json, sys, shutil, tempfile, zipfile
 from pathlib import Path
 from PIL import Image, ImageSequence
 
-TARGET_W = 96
+TARGET_W = 96      # overridden by --width
 REF_W    = 1000   # normalize to this before computing the cross-state bbox
 PROJECT  = Path(__file__).resolve().parent.parent
 OUT_ROOT = PROJECT / "characters"
@@ -35,13 +41,13 @@ def _union(a, b):
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
-def _save_state(frames, durations, dst: Path, bbox, bg_rgb):
+def _save_state(frames, durations, dst: Path, bbox, bg_rgb, target_w=TARGET_W):
     out = []
     for f in frames:
         cropped = f.crop(bbox)
         w, h = cropped.size
-        new_h = max(1, round(h * TARGET_W / w))
-        resized = cropped.resize((TARGET_W, new_h), Image.LANCZOS)
+        new_h = max(1, round(h * target_w / w))
+        resized = cropped.resize((target_w, new_h), Image.LANCZOS)
         flat = Image.new("RGB", resized.size, bg_rgb)
         flat.paste(resized, mask=resized.split()[-1])
         out.append(flat.convert("P", palette=Image.ADAPTIVE, colors=64))
@@ -52,7 +58,7 @@ def _save_state(frames, durations, dst: Path, bbox, bg_rgb):
     return dst.stat().st_size
 
 
-def install(src: Path) -> None:
+def install(src: Path, target_w: int = TARGET_W) -> None:
     if src.suffix == ".zip":
         tmp = Path(tempfile.mkdtemp())
         with zipfile.ZipFile(src) as z:
@@ -84,8 +90,11 @@ def install(src: Path) -> None:
                 global_bbox = _union(global_bbox, f.getbbox())
 
     cw, ch = global_bbox[2] - global_bbox[0], global_bbox[3] - global_bbox[1]
-    out_h = round(ch * TARGET_W / cw)
-    print(f"  global crop: {global_bbox} from {REF_W}-wide reference -> {TARGET_W}x{out_h} on device\n")
+    out_h = round(ch * target_w / cw)
+    if out_h > 140 or target_w > 135:
+        print(f"  warning: {target_w}x{out_h} exceeds the 135x140 the firmware "
+              f"places into; it will be clipped")
+    print(f"  global crop: {global_bbox} from {REF_W}-wide reference -> {target_w}x{out_h} on device\n")
 
     # Pass 2: write
     out = OUT_ROOT / name
@@ -96,7 +105,7 @@ def install(src: Path) -> None:
     device_states, total = {}, 0
     for out_name, state, frames, durations, src_bytes in loaded:
         dst = out / out_name
-        after = _save_state(frames, durations, dst, global_bbox, bg_rgb)
+        after = _save_state(frames, durations, dst, global_bbox, bg_rgb, target_w)
         total += after
         device_states.setdefault(state, []).append(out_name)
         print(f"  {out_name:14s} {src_bytes:>10,}b -> {after:>7,}b  ({len(frames)} frames)")
@@ -125,6 +134,15 @@ def install(src: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    width = TARGET_W
+    if "--width" in args:
+        i = args.index("--width")
+        try:
+            width = int(args[i + 1])
+        except (IndexError, ValueError):
+            sys.exit("--width needs a number")
+        del args[i:i + 2]
+    if len(args) != 1:
         sys.exit(__doc__)
-    install(Path(sys.argv[1]))
+    install(Path(args[0]), width)

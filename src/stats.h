@@ -183,9 +183,16 @@ struct Settings {
   bool led;
   bool hud;
   uint8_t clockRot;  // 0=auto 1=portrait 2=landscape
+  uint8_t volume;    // 0..4 -> index into VOL_STEPS in main.cpp
+  uint8_t bright;    // 0..4 -> display brightness 51..255
 };
 
-static Settings _settings = { true, true, false, true, true, 0 };
+// Speaker was pinned at 180/255 with no way down; 2 (=120) is the new
+// default so the approval chirp doesn't startle a quiet desk.
+// Brightness defaults to 3, not the old hardcoded maximum: the backlight is
+// the largest draw after the CPU, and on a 250mAh cell running it flat out by
+// default was costing runtime nobody had asked to spend.
+static Settings _settings = { true, true, false, true, true, 0, 2, 3 };
 
 inline void settingsLoad() {
   _prefs.begin("buddy", true);
@@ -196,6 +203,10 @@ inline void settingsLoad() {
   _settings.hud      = _prefs.getBool("s_hud", true);
   _settings.clockRot = _prefs.getUChar("s_crot", 0);
   if (_settings.clockRot > 2) _settings.clockRot = 0;
+  _settings.volume = _prefs.getUChar("s_vol", 2);
+  if (_settings.volume > 4) _settings.volume = 2;
+  _settings.bright = _prefs.getUChar("s_brt", 3);
+  if (_settings.bright > 4) _settings.bright = 3;
   _prefs.end();
 }
 
@@ -207,6 +218,8 @@ inline void settingsSave() {
   _prefs.putBool("s_led", _settings.led);
   _prefs.putBool("s_hud", _settings.hud);
   _prefs.putUChar("s_crot", _settings.clockRot);
+  _prefs.putUChar("s_vol", _settings.volume);
+  _prefs.putUChar("s_brt", _settings.bright);
   _prefs.end();
 }
 

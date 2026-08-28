@@ -1,4 +1,4 @@
-#include <M5StickCPlus.h>
+#include "compat.h"
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
@@ -23,7 +23,6 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -36,6 +35,15 @@ TamaState    tama;
 PersonaState baseState   = P_SLEEP;
 PersonaState activeState = P_SLEEP;
 uint32_t     oneShotUntil = 0;
+uint32_t     quietAlertUntil = 0;   // LED flutter window for the all-quiet alert
+// Held until the USB host actually opens the port. Serial.setTxTimeoutMs(0)
+// makes writes non-blocking, which means anything printed during setup() is
+// dropped rather than queued — silencing exactly the diagnostics worth
+// having.
+static const char* bootNote = nullptr;
+static const char* bootReason = nullptr;
+static uint32_t chimeNextMs = 0;    // non-blocking second note of the chime
+static uint8_t  chimeStep   = 0;
 uint32_t     lastShakeCheck = 0;
 float        accelBaseline = 1.0f;
 unsigned long t = 0;
@@ -43,7 +51,10 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+// Brightness lives in Settings so it survives a reboot; it used to be a bare
+// global that reset to maximum every boot, which quietly undid any attempt to
+// turn it down.
+bool hudVisible = false;           // did drawHUD paint the last frame?
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -52,6 +63,7 @@ uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
 uint8_t msgScroll = 0;
+uint8_t hudMaxBack = 0;         // furthest the window can go, set by drawHUD
 uint16_t lastLineGen = 0;
 char     lastPromptId[40] = "";
 uint32_t lastInteractMs = 0;
@@ -83,6 +95,7 @@ static void nextPet() {
 uint32_t wakeTransitionUntil = 0;
 const uint32_t SCREEN_OFF_MS = 30000;
 
+
 bool     napping = false;
 uint32_t napStartMs = 0;
 uint32_t promptArrivedMs = 0;
@@ -90,16 +103,22 @@ uint32_t promptArrivedMs = 0;
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  M5.Imu.getAccel(&ax, &ay, &az);
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() { M5.Display.setBrightness((settings().bright + 1) * 51); }
+
+// Speaker levels. The StickS3 drives a real 1W speaker, not the StickC
+// Plus's piezo buzzer, so the old hardcoded 180 is genuinely loud on a
+// quiet desk. Step 2 (=120) is the default.
+static const uint8_t VOL_STEPS[5] = { 30, 70, 120, 180, 255 };
+static void applyVolume() { M5.Speaker.setVolume(VOL_STEPS[settings().volume]); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    M5.Display.wakeup();
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -107,9 +126,19 @@ static void wake() {
   if (dimmed) { applyBrightness(); dimmed = false; }
 }
 bool     responseSent = false;
+uint32_t responseSentMs = 0;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) M5.Speaker.tone(freq, dur);
+}
+
+// Two-note rising chime for the all-quiet alert, deliberately unlike the
+// single flat chirp an approval makes. The second note is fired from loop()
+// so nothing blocks here.
+static void startChime(uint32_t now) {
+  beep(1175, 100);
+  chimeStep = 1;
+  chimeNextMs = now + 120;
 }
 
 static void sendCmd(const char* json) {
@@ -124,14 +153,18 @@ const uint8_t INFO_PG_CREDITS = 5;
 
 void applyDisplayMode() {
   bool peek = displayMode != DISP_NORMAL;
-  characterSetPeek(peek);
+  // Info and pet pages repaint from y=70, so the pet only gets half scale
+  // there; the clock face sets its own, larger level.
+  bool peekChanged = characterSetPeek(peek ? PEEK_HALF : PEEK_OFF);
   buddySetPeek(peek);
   // Clear the whole sprite on mode switch. drawInfo/drawPet clear their
   // own regions when they run, but when you switch FROM info/pet TO normal,
   // those functions stop running and their stale pixels stay behind. Full
   // clear is cheap and guarantees no leftovers between modes.
   spr.fillSprite(0x0000);
-  characterInvalidate();  // redraws character on next tick (text mode path)
+  // characterSetPeek already invalidated if the level moved; doing it again
+  // reopens the GIF a second time for nothing.
+  if (!peekChanged) characterInvalidate();
 }
 
 const char* menuItems[] = { "settings", "turn off", "help", "about", "demo", "close" };
@@ -139,8 +172,8 @@ const uint8_t MENU_N = 6;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
-const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
-const uint8_t SETTINGS_N = 10;
+const char* settingsItems[] = { "brightness", "sound", "volume", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
+const uint8_t SETTINGS_N = 11;
 
 bool    resetOpen = false;
 uint8_t resetSel  = 0;
@@ -153,24 +186,32 @@ static void applySetting(uint8_t idx) {
   Settings& s = settings();
   switch (idx) {
     case 0:
-      brightLevel = (brightLevel + 1) % 5;
+      s.bright = (s.bright + 1) % 5;
       applyBrightness();
-      return;
+      break;              // falls through to settingsSave() -- it used to
+                          // return here, which is why it never persisted
     case 1: s.sound = !s.sound; break;
     case 2:
+      s.volume = (s.volume + 1) % 5;
+      applyVolume();
+      // Preview the level you just picked — bypasses beep()'s sound gate so
+      // the step is audible even while stepping past a muted setting.
+      M5.Speaker.tone(1200, 70);
+      break;
+    case 3:
       // BT toggle is a stored preference only — BLE stays live. Turning
       // BLE off cleanly would require tearing down the BLE stack which
       // the Arduino BLE library doesn't do reliably. If we need a
       // hard-off someday, stop advertising via BLEDevice::getAdvertising().
       s.bt = !s.bt;
       break;
-    case 3: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
-    case 4: s.led = !s.led; break;
-    case 5: s.hud = !s.hud; break;
-    case 6: s.clockRot = (s.clockRot + 1) % 3; break;
-    case 7: nextPet(); return;
-    case 8: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
-    case 9: settingsOpen = false; characterInvalidate(); return;
+    case 4: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
+    case 5: s.led = !s.led; break;
+    case 6: s.hud = !s.hud; break;
+    case 7: s.clockRot = (s.clockRot + 1) % 3; break;
+    case 8: nextPet(); return;
+    case 9: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
+    case 10: settingsOpen = false; characterInvalidate(); return;
   }
   settingsSave();
 }
@@ -189,6 +230,12 @@ static void applyReset(uint8_t idx) {
     beep(1400, 60);
     return;
   }
+
+  // Both branches below run far longer than the 5s watchdog allows —
+  // LittleFS.format() alone takes several seconds on a 3.94MB partition —
+  // and both end in ESP.restart(), so drop off the watchdog rather than
+  // trying to feed it through a blocking call.
+  disableLoopWDT();
 
   beep(800, 200);
   if (idx == 0) {
@@ -256,7 +303,6 @@ static void drawSettings() {
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
   spr.setTextSize(1);
   Settings& s = settings();
-  bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.hud };
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
@@ -265,15 +311,28 @@ static void drawSettings() {
     spr.print(settingsItems[i]);
     spr.setCursor(mx + mw - 36, my + 8 + i * 14);
     spr.setTextColor(p.textDim, PANEL);
-    if (i == 0) {
-      spr.printf("%u/4", brightLevel);
-    } else if (i >= 1 && i <= 5) {
-      spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
-      spr.print(vals[i-1] ? " on" : "off");
-    } else if (i == 6) {
+    // The bool rows stopped being one contiguous run once "volume" landed
+    // between sound and bluetooth, so map each row explicitly rather than
+    // indexing a parallel array by offset.
+    const bool* b = nullptr;
+    switch (i) {
+      case 1: b = &s.sound; break;
+      case 3: b = &s.bt;    break;
+      case 4: b = &s.wifi;  break;
+      case 5: b = &s.led;   break;
+      case 6: b = &s.hud;   break;
+    }
+    if (b) {
+      spr.setTextColor(*b ? GREEN : p.textDim, PANEL);
+      spr.print(*b ? " on" : "off");
+    } else if (i == 0) {
+      spr.printf("%u/4", s.bright);
+    } else if (i == 2) {
+      spr.printf("%u/4", s.volume);
+    } else if (i == 7) {
       static const char* const RN[] = { "auto", "port", "land" };
       spr.print(RN[s.clockRot]);
-    } else if (i == 7) {
+    } else if (i == 8) {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
       uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
       spr.printf("%u/%u", pos, total);
@@ -305,7 +364,7 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    case 1: M5.Power.powerOff(); break;
     case 2:
     case 3:
       menuOpen = false;
@@ -356,14 +415,14 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  _onUsb = compatOnUsb();
+  compatRtcGetTime(&_clkTm);
+  compatRtcGetDate(&_clkDt);
 }
 
 static void clockUpdateOrient() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  M5.Imu.getAccel(&ax, &ay, &az);
   uint8_t lock = settings().clockRot;
   if (lock == 1) { clockOrient = 0; return; }
   if (lock == 2) {
@@ -418,9 +477,10 @@ static void drawClock() {
 
   if (clockOrient == 0) {
     paintedOrient = 0;
-    // Bottom half — buddy naturally lives at y=0..82, GIF peeks at top
-    // via peek mode. Clearing from 90 leaves both untouched.
-    spr.fillRect(0, 90, W, H - 90, p.bg);
+    // Bottom half — buddy naturally lives at y=0..82, GIF peeks at top via
+    // peek mode, now 3:4 rather than 1:2 and so reaching y=95. Clearing from
+    // 98 still leaves both untouched.
+    spr.fillRect(0, 98, W, H - 98, p.bg);
     spr.setTextDatum(MC_DATUM);
     spr.setTextSize(4); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, CX, 140);
     spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, CX, 175);
@@ -479,9 +539,15 @@ static void drawClock() {
 PersonaState derive(const TamaState& s) {
   if (!s.connected)            return P_IDLE;
   if (s.sessionsWaiting > 0)   return P_ATTENTION;
+  // Dead in practice: the desktop heartbeat has no `completed` key, so this
+  // never fires. Kept because it costs nothing and would light up on its own
+  // if the desktop ever starts sending it. The all-quiet alert in loop()
+  // is what actually reacts to work finishing today.
   if (s.recentlyCompleted)     return P_CELEBRATE;
-  if (s.sessionsRunning >= 3)  return P_BUSY;
-  return P_IDLE;   // connected, 0+ sessions, nothing urgent — hang out
+  // Was >= 3, which left the pet looking idle through one or two parallel
+  // tasks — the common case. One running session is already "working".
+  if (s.sessionsRunning >= 1)  return P_BUSY;
+  return P_IDLE;   // connected, nothing running, nothing urgent — hang out
 }
 
 void triggerOneShot(PersonaState s, uint32_t durMs) {
@@ -491,7 +557,7 @@ void triggerOneShot(PersonaState s, uint32_t durMs) {
 
 bool checkShake() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  M5.Imu.getAccel(&ax, &ay, &az);
   float mag = sqrtf(ax*ax + ay*ay + az*az);
   float delta = fabsf(mag - accelBaseline);
   accelBaseline = accelBaseline * 0.95f + mag * 0.05f;
@@ -593,11 +659,10 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    int vBat_mV = M5.Power.getBatteryVoltage();
+    int iBat_mA = (int)M5.Power.getBatteryCurrent();
+    int vBus_mV = M5.Power.getVBUSVoltage();
+    int pct = compatBatteryPct(vBat_mV);
     bool usb = vBus_mV > 4000;
     bool charging = usb && iBat_mA > 1;
     bool full = usb && vBat_mV > 4100 && iBat_mA < 10;
@@ -625,9 +690,9 @@ void drawInfo() {
     uint32_t up = millis() / 1000;
     ln("  uptime   %luh %02lum", up / 3600, (up / 60) % 60);
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
-    ln("  bright   %u/4", brightLevel);
+    ln("  bright   %u/4", settings().bright);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+    ln("  temp     %dC", compatChipTempC());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -682,87 +747,144 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
+#if defined(BOARD_STICKS3)
+    ln("M5StickS3");
+    ln("ESP32-S3 + M5PM1");
+#else
     ln("M5StickC Plus");
     ln("ESP32 + AXP192");
+#endif
   }
 }
 
 
-// Greedy word-wrap into fixed-width rows. Continuation rows get a leading
-// space. Returns number of rows written.
-static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t width) {
+// Bytes per wrapped row. A row is budgeted in half-width columns, and the
+// widest thing that fits a column pair is a 4-byte UTF-8 sequence, so the
+// worst case is (HUD_COLS / 2) * 4 + terminator.
+#define HUD_WRAP_BYTES 48
+
+// UTF-8 aware greedy wrap. `cols` is a budget in half-width units: an ASCII
+// byte costs 1, any multi-byte sequence costs 2, matching efont's biwidth
+// metrics (6px latin, 12px CJK).
+//
+// The previous version walked raw bytes and hard-broke over-long words with
+// memcpy at an arbitrary offset. Latin text survived that; a Chinese line has
+// no spaces at all, so it took the hard-break path every time and sliced UTF-8
+// mid-sequence, which is what rendered as garbage. This one only ever cuts on
+// a sequence boundary, and prefers the last space on the row so latin words
+// still stay whole.
+static uint8_t wrapInto(const char* in, char out[][HUD_WRAP_BYTES],
+                        uint8_t maxRows, uint8_t cols) {
   uint8_t row = 0, col = 0;
+  uint16_t bi = 0;
+  const char* spP = nullptr;   // input position of the last space on this row
+  uint16_t    spBi = 0;        // ...and where it landed in the output
   const char* p = in;
+
   while (*p && row < maxRows) {
-    while (*p == ' ') p++;                     // skip leading spaces
-    // measure next word
-    const char* w = p;
-    while (*p && *p != ' ') p++;
-    uint8_t wlen = p - w;
-    if (wlen == 0) break;
-    uint8_t need = (col > 0 ? 1 : 0) + wlen;
-    if (col + need > width) {
-      out[row][col] = 0;
-      if (++row >= maxRows) return row;
-      out[row][0] = ' '; col = 1;              // continuation indent
+    unsigned char c = (unsigned char)*p;
+    uint8_t sl = 1;
+    if      (c >= 0xF0) sl = 4;
+    else if (c >= 0xE0) sl = 3;
+    else if (c >= 0xC0) sl = 2;
+    // A truncated sequence (the desktop clips entries to a byte budget) would
+    // otherwise make us read past the terminator — fall back to one byte.
+    for (uint8_t k = 1; k < sl; k++) {
+      if ((p[k] & 0xC0) != 0x80) { sl = 1; break; }
     }
-    if (col > 1 || (col == 1 && out[row][0] != ' ')) out[row][col++] = ' ';
-    else if (col == 1 && row > 0) {}           // already have the indent space
-    // hard-break words that still don't fit
-    while (wlen > width - col) {
-      uint8_t take = width - col;
-      memcpy(&out[row][col], w, take); col += take; w += take; wlen -= take;
-      out[row][col] = 0;
+    uint8_t w = (sl == 1) ? 1 : 2;
+
+    if (col == 0 && c == ' ') { p++; continue; }        // trim row-leading space
+
+    if (col + w > cols || bi + sl >= HUD_WRAP_BYTES - 1) {
+      if (spP) {
+        out[row][spBi] = 0;      // cut at the space...
+        p = spP + 1;             // ...and re-read everything after it
+      } else {
+        out[row][bi] = 0;        // no space to break on (CJK run, long token)
+      }
       if (++row >= maxRows) return row;
-      out[row][0] = ' '; col = 1;
+      bi = 0; col = 0; spP = nullptr;
+      continue;
     }
-    memcpy(&out[row][col], w, wlen); col += wlen;
+    if (c == ' ') { spP = p; spBi = bi; }
+    memcpy(&out[row][bi], p, sl);
+    bi += sl; col += w; p += sl;
   }
-  if (col > 0 && row < maxRows) { out[row][col] = 0; row++; }
+  if (bi > 0 && row < maxRows) { out[row][bi] = 0; row++; }
   return row;
 }
 
 static void drawApproval() {
   const Palette& p = characterPalette();
-  const int AREA = 78;
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
-  spr.drawFastHLine(0, H - AREA, W, p.textDim);
 
-  spr.setTextSize(1);
-  spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(4, H - AREA + 4);
-  uint32_t waited = (millis() - promptArrivedMs) / 1000;
-  if (waited >= 10) spr.setTextColor(HOT, p.bg);
-  spr.printf("approve? %lus", (unsigned long)waited);
+  // The desktop caps prompt.hint at ~40 chars, so render it BIG (text size 2)
+  // and chunk it at 11 glyphs/line: that fills the panel with large, readable
+  // text instead of a tiny line plus a blank gap. Panel height adapts to the
+  // number of lines so there's never wasted space.
+  const char* hint = tama.promptHint;
+  int hlen = strlen(hint);
+  const int HCOLS = 17, HL = 11;        // glyphs/line and line height at size 1.25
+  int rows = (hlen + HCOLS - 1) / HCOLS;
+  if (rows > 7) rows = 7;
 
-  // Size 2 only if it fits one line (~10 chars at 12px on 135px screen)
   int toolLen = strlen(tama.promptTool);
+  bool bigTool = toolLen <= 14;         // fits one line at size 1.5
+  int toolH = bigTool ? 15 : 11;
+
+  // header(13) + tool + hint rows + button row(12) + paddings
+  int area = 4 + 13 + toolH + rows * HL + 6 + 12 + 4;
+  const int MIN_AREA = 56;
+  const int MAX_AREA = H - 72;          // keep the pet peeking up top
+  if (area < MIN_AREA) area = MIN_AREA;
+  if (area > MAX_AREA) area = MAX_AREA;
+  int TOP  = H - area;
+  int botY = H - 12;                    // baseline row for the A/B buttons
+
+  spr.fillRect(0, TOP, W, H - TOP, p.bg);
+  spr.drawFastHLine(0, TOP, W, p.textDim);
+
+  int y = TOP + 4;
+
+  // Header (small): "approve? Ns" — turns hot once it's been waiting a while.
+  spr.setTextSize(1);
+  uint32_t waited = (millis() - promptArrivedMs) / 1000;
+  spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+  spr.setCursor(4, y);
+  spr.printf("approve? %lus", (unsigned long)waited);
+  y += 13;
+
+  // Tool name as a title (size 1.5), slightly larger than the hint.
   spr.setTextColor(p.text, p.bg);
-  spr.setTextSize(toolLen <= 10 ? 2 : 1);
-  spr.setCursor(4, H - AREA + (toolLen <= 10 ? 14 : 18));
+  spr.setTextSize(bigTool ? 1.5f : 1.0f);
+  spr.setCursor(4, y);
   spr.print(tama.promptTool);
+  y += toolH;
+
+  // Hint at size 1.25 (smaller than the tool title), fixed-width chunks.
+  spr.setTextSize(1.25f);
+  spr.setTextColor(p.text, p.bg);
+  for (int off = 0; off < hlen && y <= botY - HL + 2; off += HCOLS) {
+    char seg[HCOLS + 1];
+    int n = hlen - off; if (n > HCOLS) n = HCOLS;
+    memcpy(seg, hint + off, n); seg[n] = 0;
+    spr.setCursor(2, y);
+    spr.print(seg);
+    y += HL;
+  }
   spr.setTextSize(1);
 
-  // Hint wraps at ~21 chars to two lines under the tool name
-  spr.setTextColor(p.textDim, p.bg);
-  int hlen = strlen(tama.promptHint);
-  spr.setCursor(4, H - AREA + 34);
-  spr.printf("%.21s", tama.promptHint);
-  if (hlen > 21) {
-    spr.setCursor(4, H - AREA + 42);
-    spr.printf("%.21s", tama.promptHint + 21);
-  }
-
+  // Button / status row, pinned to the bottom.
   if (responseSent) {
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(4, botY);
     spr.print("sent...");
   } else {
     spr.setTextColor(GREEN, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(4, botY);
     spr.print("A: approve");
     spr.setTextColor(HOT, p.bg);
-    spr.setCursor(W - 48, H - 12);
+    spr.setCursor(W - 48, botY);
     spr.print("B: deny");
   }
 }
@@ -888,35 +1010,82 @@ void drawPet() {
 }
 
 void drawHUD() {
-  if (tama.promptId[0]) { drawApproval(); return; }
+  // promptId only clears when the desktop's next heartbeat arrives without a
+  // `prompt` field, so keying the panel purely off it left it on screen after
+  // you had already answered. Once we've replied, hold just long enough to
+  // show "sent..." and then drop back to the normal screen.
+  if (tama.promptId[0]
+   && (!responseSent || (int32_t)(millis() - responseSentMs) < 1200)) {
+    drawApproval(); return;
+  }
   const Palette& p = characterPalette();
-  const int SHOW = 3, LH = 8, WIDTH = 21;
+  // efontCN_12 for this strip only. The transcript carries whatever the
+  // desktop puts in it — including the assistant's own prose — so with the
+  // built-in 6x8 latin font every non-ASCII line rendered as garbage. efont
+  // is biwidth: latin stays 6px, so the 21-column budget and the density of
+  // command text are unchanged; CJK gets its own 12px glyphs. Only the row
+  // height grows (8 -> 12), taking the strip from 28px to 40px, which still
+  // clears the pet at ~y185.
+  const int SHOW = 3, LH = 12, WIDTH = 21;   // WIDTH counts half-width columns
   const int AREA = SHOW * LH + 4;
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
+  spr.setFont(&fonts::efontCN_12);
   spr.setTextSize(1);
 
-  if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
+  if (tama.lineGen != lastLineGen) { lastLineGen = tama.lineGen; wake(); }
 
   if (tama.nLines == 0) {
     spr.setTextColor(p.text, p.bg);
     spr.setCursor(4, H - LH - 2);
     spr.print(tama.msg);
+    msgScroll = 0;                // nothing to scroll through
+    spr.setFont(&fonts::Font0);   // every other panel assumes the 6x8 default
     return;
   }
 
   // Wrap all transcript lines into a flat display buffer. Track which
   // transcript index each display row came from, so we can dim older ones.
-  static char disp[32][24];
+  //
+  // Rows are claimed newest-entry-first and pushed to the front of the
+  // buffer. A forward fill spends the budget on the oldest lines, and once
+  // entries are long enough to wrap several rows each -- which CJK does, at
+  // ~10 glyphs a row -- the newest entry is exactly the one that falls off
+  // the end. The visible window sits at the tail, so that is backwards.
+  static char disp[32][HUD_WRAP_BYTES];
+  static char tmp[32][HUD_WRAP_BYTES];
   static uint8_t srcOf[32];
-  uint8_t nDisp = 0;
-  for (uint8_t i = 0; i < tama.nLines && nDisp < 32; i++) {
-    uint8_t got = wrapInto(tama.lines[i], &disp[nDisp], 32 - nDisp, WIDTH);
-    for (uint8_t j = 0; j < got; j++) srcOf[nDisp + j] = i;
-    nDisp += got;
+  static uint8_t nDisp = 0;
+  static bool frozen = false;
+
+  // Scrolled back, the buffer is frozen rather than rebuilt. The desktop only
+  // keeps the last 8 entries, so a new one pushes an old one out: rows leave
+  // the front as fast as they arrive at the back. Shifting the offset by the
+  // net row count — the obvious fix, and the one tried first — therefore
+  // adjusts by nothing at all in steady state, and the window slides to the
+  // tail regardless. Not re-wrapping at all is simpler, cheaper, and exact:
+  // what you are reading cannot move because nothing rebuilt it.
+  if (msgScroll == 0) frozen = false;
+
+  if (!frozen) {
+    nDisp = 0;
+    for (int i = (int)tama.nLines - 1; i >= 0 && nDisp < 32; i--) {
+      uint8_t got = wrapInto(tama.lines[i], tmp, 32 - nDisp, WIDTH);
+      if (!got) continue;
+      memmove(&disp[got], &disp[0], (size_t)nDisp * HUD_WRAP_BYTES);
+      memmove(&srcOf[got], &srcOf[0], nDisp);
+      memcpy(&disp[0], &tmp[0], (size_t)got * HUD_WRAP_BYTES);
+      for (uint8_t j = 0; j < got; j++) srcOf[j] = (uint8_t)i;
+      nDisp += got;
+    }
   }
 
   uint8_t maxBack = (nDisp > SHOW) ? (nDisp - SHOW) : 0;
+  hudMaxBack = maxBack;
+  hudVisible = true;
   if (msgScroll > maxBack) msgScroll = maxBack;
+  // Latch the freeze once the clamp has confirmed there is somewhere to go.
+  if (msgScroll > 0) frozen = true;
+
 
   int end = (int)nDisp - msgScroll;
   int start = end - SHOW; if (start < 0) start = 0;
@@ -933,20 +1102,80 @@ void drawHUD() {
     spr.setCursor(W - 18, H - LH - 2);
     spr.printf("-%u", msgScroll);
   }
+  // drawMenu/drawSettings paint over this frame after we return, and they are
+  // all laid out for the 6x8 default — leaving efont set would reflow them.
+  spr.setFont(&fonts::Font0);
 }
 
 void setup() {
-  M5.begin();
+  // USB-CDC (native USB on ESP32-S3) blocks on write when no serial monitor
+  // is attached — the TX buffer fills and Serial.print() waits forever for a
+  // host, hanging setup()/loop(). Make it non-blocking so the device runs
+  // standalone. Harmless on the StickC Plus (real UART).
+  Serial.setTxTimeoutMs(0);
+  // Why the last boot happened, held until a host is listening. Two comms
+  // outages have been observed where the render loop kept running while BLE
+  // and USB-CDC both went silent, with an empty coredump and a healthy heap —
+  // so nothing crashed and the watchdog, which only covers a wedged loop, had
+  // nothing to act on. Recording the reset reason at least distinguishes a
+  // power-cycle from a panic, a brownout or a watchdog the next time one of
+  // these has to be untangled after the fact.
+  {
+    static const char* const R[] = {
+      "unknown", "power-on", "external", "software", "panic", "int watchdog",
+      "task watchdog", "other watchdog", "deep sleep", "brownout", "sdio",
+    };
+    int r = (int)esp_reset_reason();
+    bootReason = (r >= 0 && r < (int)(sizeof(R)/sizeof(R[0]))) ? R[r] : "?";
+  }
+  // The CDC RX queue defaults to 256 bytes, but USB is a supported bridge
+  // transport here and a snapshot runs to a couple of KB — a desktop pushing
+  // one over the wire outruns a 16ms loop and the tail is dropped.
+  Serial.setRxBufferSize(4096);
+  {
+    auto cfg = M5.config();
+    // Nothing in this firmware drives the Grove port on either board, and
+    // output_power defaults to on, which leaves a 5V boost converter running
+    // unloaded off the battery — the PM1's on the StickS3, EXTEN on the
+    // StickC Plus's AXP192. On the StickS3 that alone was enough to cancel
+    // out the charge current. Attaching a Grove peripheral means dropping
+    // this line; see the README.
+    cfg.output_power = false;
+    M5.begin(cfg);
+  }
+
+#if defined(BOARD_STICKS3)
+  // Defensive. M5Unified enables the charger in Power.begin() for some boards
+  // but not this one, so CHG_EN is left at whatever PWR_CFG holds — and
+  // PWR_CFG survives a reset. Measured boards come up with it set, so this
+  // has not been seen to fire; it is here because the LED shares this
+  // register, and a stick that silently stops charging is miserable to
+  // diagnose (VBUS reads fine, nothing reports a fault).
+  {
+    bool charging = false;
+    if (!M5.Power.M5pm1.getBatteryCharge(&charging)) {
+      bootNote = "[pwr] could not read charger state";
+    } else if (!charging) {
+      M5.Power.M5pm1.setBatteryCharge(true);
+      bootNote = "[pwr] charger was disabled at boot; enabled";
+    }
+  }
+#endif
+
   M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  // IMU auto-inits in M5.begin(). Volume comes from NVS, but settingsLoad()
+  // runs further down, so this is re-applied after it.
+  M5.Speaker.setVolume(VOL_STEPS[2]);
   startBt();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
-  applyBrightness();
+  compatLedInit();
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  // Both read Settings, so they belong after the load. Brightness was applied
+  // before it, i.e. always at the compiled-in default no matter what was
+  // stored.
+  applyBrightness();
+  applyVolume();
   petNameLoad();
   buddyInit();
 
@@ -983,16 +1212,91 @@ void setup() {
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+
+  // Subscribe loop() to the task watchdog. The Arduino core leaves the loop
+  // task unwatched by default, so a main loop that wedges takes the UI, the
+  // BLE bridge and the serial console with it while the USB peripheral keeps
+  // enumerating from its own task — the device looks alive to the host and
+  // needs someone to physically press the power button. Observed once on
+  // hardware, with no coredump to explain it.
+  //
+  // The core resets the watchdog itself before each loop() call, so nothing
+  // else here has to feed it. The timeout is 5s and CONFIG_ESP_TASK_WDT_PANIC
+  // is set, so a wedge now writes a coredump to the partition reserved for
+  // one and reboots, which also makes the next occurrence diagnosable.
+  enableLoopWDT();
 }
 
 void loop() {
   M5.update();
-  M5.Beep.update();
   t++;
   uint32_t now = millis();
 
+  if (bootReason && Serial) {
+    Serial.printf("[boot] reset reason: %s\n", bootReason);
+    bootReason = nullptr;
+  }
+  if (bootNote && Serial) { Serial.println(bootNote); bootNote = nullptr; }
+
+  { // Silent corruption is the failure mode that cost the most time here.
+    static uint32_t lastDropped = 0;
+    uint32_t dropped = bleRxDropped();
+    if (dropped != lastDropped) {
+      Serial.printf("[ble] RX ring full, dropped %lu bytes total\n",
+                    (unsigned long)dropped);
+      lastDropped = dropped;
+    }
+  }
+
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
+
+  if (chimeStep && (int32_t)(now - chimeNextMs) >= 0) {
+    beep(1568, 140);
+    chimeStep = 0;
+  }
+
+  // --- All-quiet alert ---------------------------------------------------
+  // The heartbeat never says a task *finished*: it reports `running` (how
+  // many sessions are actively generating) and nothing else. So infer it —
+  // when the running count falls back to zero with no approval pending, the
+  // machine has stopped needing the CPU and started needing you.
+  //
+  // This deliberately does not distinguish "the task completed" from "it
+  // stopped to ask a question": a session blocked on AskUserQuestion is not
+  // generating either, so both land here. The desktop gives us no way to
+  // tell them apart — `prompt` only ever carries tool-permission requests.
+  static bool sawWork = false;
+  static uint32_t quietSinceMs = 0;
+  static uint8_t hbT = 255, hbR = 255, hbW = 255;
+  if (tama.sessionsTotal   != hbT || tama.sessionsRunning != hbR
+   || tama.sessionsWaiting != hbW) {
+    Serial.printf("[hb] total=%u running=%u waiting=%u msg='%s'\n",
+                  tama.sessionsTotal, tama.sessionsRunning,
+                  tama.sessionsWaiting, tama.msg);
+    hbT = tama.sessionsTotal; hbR = tama.sessionsRunning; hbW = tama.sessionsWaiting;
+  }
+  //
+  // Debounced: `running` dips to zero between turns inside one agent session,
+  // so firing on the raw edge would chime every few tool calls. Only a quiet
+  // spell that outlasts QUIET_SETTLE_MS counts as the work actually stopping.
+  static const uint32_t QUIET_SETTLE_MS = 3000;
+  if (!tama.connected) {
+    sawWork = false; quietSinceMs = 0;
+  } else if (tama.sessionsRunning > 0) {
+    sawWork = true;  quietSinceMs = 0;
+  } else if (sawWork && tama.sessionsWaiting == 0) {
+    if (quietSinceMs == 0) {
+      quietSinceMs = now ? now : 1;   // 0 is the "not counting" sentinel
+    } else if ((int32_t)(now - quietSinceMs) >= (int32_t)QUIET_SETTLE_MS) {
+      sawWork = false; quietSinceMs = 0;
+      quietAlertUntil = now + 4000;
+      wake();
+      triggerOneShot(P_CELEBRATE, 3000);
+      startChime(now);
+      Serial.println("[alert] all sessions quiet");
+    }
+  }
   baseState = derive(tama);
 
   // After waking the screen, hold sleep for 12s so users see the wake-up
@@ -1001,11 +1305,23 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
-  // LED: pulse on attention, otherwise off
-  if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
-  } else {
-    digitalWrite(LED_PIN, HIGH);
+  // LED: pulse on attention, otherwise off.
+  bool ledOn = false;
+  if (settings().led) {
+    if (activeState == P_ATTENTION) {
+      ledOn = (now / 400) % 2;              // slow pulse: waiting on you
+    } else if ((int32_t)(now - quietAlertUntil) < 0) {
+      ledOn = (now / 150) % 2;              // quick flutter: work went quiet
+    }
+  }
+  // Only write on a change. On the StickS3 the LED lives on the PMIC's
+  // PWR_CFG register, so an unconditional call here would be an I2C
+  // read-modify-write of the charger and rail enables sixty times a second.
+  // -1 forces the first write regardless of what compatLedInit() left.
+  static int8_t ledLast = -1;
+  if (ledLast != (int8_t)ledOn) {
+    ledLast = ledOn;
+    compatLedSet(ledOn);
   }
 
   // shake → dizzy + force scenario advance
@@ -1021,6 +1337,8 @@ void loop() {
   // BtnA: step through fake scenarios
   // Prompt arrival: beep, reset response flag
   if (strcmp(tama.promptId, lastPromptId) != 0) {
+    Serial.printf("[prompt] %s tool='%s'\n",
+                  tama.promptId[0] ? tama.promptId : "(cleared)", tama.promptTool);
     strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId)-1);
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
@@ -1053,11 +1371,11 @@ void loop() {
 
   // AXP power button (left side): short-press toggles screen off.
   // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  if (M5.BtnPWR.wasClicked()) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      M5.Display.sleep();
       screenOff = true;
     }
   }
@@ -1081,6 +1399,7 @@ void loop() {
         snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
         sendCmd(cmd);
         responseSent = true;
+      responseSentMs = millis();
         uint32_t tookS = (millis() - promptArrivedMs) / 1000;
         statsOnApproval(tookS);
         beep(2400, 60);
@@ -1114,6 +1433,7 @@ void loop() {
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
       sendCmd(cmd);
       responseSent = true;
+      responseSentMs = millis();
       statsOnDenial();
       beep(600, 60);
     } else if (resetOpen) {
@@ -1132,9 +1452,13 @@ void loop() {
       beep(2400, 30);
       petPage = (petPage + 1) % PET_PAGES;
       applyDisplayMode();
-    } else {
+    } else if (hudVisible) {
       beep(2400, 30);
-      msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+      // Wrap at the end of the available scrollback rather than a fixed 30.
+      // The window clamps to hudMaxBack every frame, so counting past it left
+      // B doing nothing visible until the counter happened to reach 30. Now
+      // the oldest row is one press from live.
+      msgScroll = (msgScroll >= hudMaxBack) ? 0 : msgScroll + 1;
     }
   }
 
@@ -1147,9 +1471,14 @@ void loop() {
   clockRefreshRtc();   // 1Hz internal throttle; also caches _onUsb
   // Show the clock when nothing is happening — bridge heartbeat alone
   // doesn't count as activity (it's the only way to get the RTC synced).
+  // The all-quiet alert fires on exactly the transition that also satisfies
+  // the clock's entry condition (running hits zero). Clock mode overwrites
+  // activeState and draws over the pet, so it would swallow the celebration
+  // it was meant to announce. Hold it off until the alert window closes.
   bool clocking = displayMode == DISP_NORMAL
                && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
+               && (int32_t)(now - quietAlertUntil) >= 0
                && dataRtcValid() && _onUsb;
   if (clocking) clockUpdateOrient();
   else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
@@ -1158,9 +1487,17 @@ void loop() {
   static bool wasClocking = false;
   static bool wasLandscape = false;
   if (clocking != wasClocking || landscapeClock != wasLandscape) {
-    if (clocking && !landscapeClock) characterSetPeek(true);
-    else applyDisplayMode();
-    characterInvalidate();
+    // Both branches already invalidate: characterSetPeek() does it whenever
+    // the level actually changes, and applyDisplayMode() calls it outright.
+    // Invalidating again here reopened the GIF a second time, and every open
+    // clears the whole sprite -- so each transition in and out of clock mode
+    // cost two flashes rather than one. The level always changes across this
+    // transition, so neither branch can silently skip it.
+    if (clocking && !landscapeClock) {
+      if (!characterSetPeek(PEEK_3Q)) characterInvalidate();
+    } else {
+      applyDisplayMode();
+    }
     if (buddyMode) buddyInvalidate();
     wasClocking = clocking;
     wasLandscape = landscapeClock;
@@ -1215,6 +1552,10 @@ void loop() {
       spr.print("no character loaded");
     }
   }
+  // The B handler runs before this and cannot see which surface is up, so
+  // record it. Without that, pressing B under the clock face silently bumped
+  // the transcript offset and beeped, with nothing on screen to show for it.
+  hudVisible = false;
   if (landscapeClock) {
     drawClock();
   } else if (!napping && !screenOff) {
@@ -1226,6 +1567,22 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
+
+    // An overlay panel just closed. Nothing repaints the area it covered: the
+    // settings panel spans y=28..212, drawInfo only repaints from y=70 and
+    // drawHUD only the bottom strip, so the rest of the panel would survive as
+    // a ghost. Opening a GIF used to wipe the sprite unconditionally and
+    // cleaned this up by accident; now that it only wipes when the pet
+    // actually moves, the cleanup has to be asked for.
+    static bool hadOverlay = false;
+    bool overlay = resetOpen || settingsOpen || menuOpen;
+    if (hadOverlay && !overlay) {
+      spr.fillSprite(0x0000);
+      characterInvalidate();
+      if (buddyMode) buddyInvalidate();
+    }
+    hadOverlay = overlay;
+
     spr.pushSprite(0, 0);
   }
 
@@ -1243,7 +1600,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    M5.Display.setBrightness(8);
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1257,8 +1614,14 @@ void loop() {
   // No auto-off on USB power — clock face wants to stay visible while charging.
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+    M5.Display.sleep();
     screenOff = true;
+    // Nobody is reading a dark screen, so this is the moment a scrolled-back
+    // window has been abandoned — no separate deadline needed, and no chance
+    // of the two disagreeing. A timer here was 6x the screen timeout, so the
+    // display slept first and woke still parked on stale rows: exactly what
+    // the timer existed to prevent.
+    msgScroll = 0;
   }
 
   delay(screenOff ? 100 : 16);

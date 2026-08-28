@@ -24,6 +24,9 @@ bool bleSecure();
 // Non-zero while a 6-digit pairing passkey should be on screen. main.cpp
 // renders it; cleared automatically on auth complete or disconnect.
 uint32_t blePasskey();
+// Bytes lost because the RX ring was full. Non-zero means snapshots are being
+// corrupted in transit, which otherwise looks like the bridge going silent.
+uint32_t bleRxDropped();
 // Erase all stored bonds (LTKs) from NVS. Called from the "unpair" cmd
 // and from factory reset.
 void bleClearBonds();
