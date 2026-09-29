@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
+#include "battery.h"
 #include "data.h"
 #include "buddy.h"
 
@@ -596,8 +597,10 @@ void drawInfo() {
     int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
     int iBat_mA = (int)M5.Axp.GetBatCurrent();
     int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    // Same smoothed coulomb-counter SoC the BLE status path uses; the
+    // raw (vBat-3200)/10 formula was here too and produced the same
+    // unplug-jump complaint visible on the on-device info page.
+    int pct = battery::percent();
     bool usb = vBus_mV > 4000;
     bool charging = usb && iBat_mA > 1;
     bool full = usb && vBat_mV > 4100 && iBat_mA < 10;
@@ -940,6 +943,7 @@ void setup() {
   M5.Lcd.setRotation(0);
   M5.Imu.Init();
   M5.Beep.begin();
+  battery::begin();
   startBt();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);   // off
@@ -991,6 +995,7 @@ void loop() {
   t++;
   uint32_t now = millis();
 
+  battery::poll();
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
   baseState = derive(tama);
