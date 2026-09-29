@@ -138,8 +138,12 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(false)) {
-    // begin() fails if already mounted — that's fine on reload
+  // Format on mount failure: a freshly-flashed stick ships with an
+  // uninitialised LittleFS partition, and with format=false the mount
+  // silently fails — leaving every subsequent folder-push request
+  // with "have 0K" until the user finds the factory-reset menu. The
+  // reload-already-mounted case is handled the same way either flag.
+  if (!LittleFS.begin(true)) {
     if (!LittleFS.open("/")) {
       Serial.println("[char] LittleFS mount failed");
       return false;
