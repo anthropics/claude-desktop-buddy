@@ -1001,6 +1001,27 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
+  // 'Task complete' chime: paired with the celebrate animation. The buddy is
+  // the visual notification, but without an audio cue you miss it entirely
+  // when looking at another screen. Respects settings().sound via beep().
+  //
+  // Two-note ascending chime (2000 Hz → 2800 Hz, the universal "ta-da" of
+  // completion sounds) so it doesn't collide with the existing single-tone
+  // palette (600 deny / 1200 prompt / 1800 cycle / 2400 approve). Note 2 is
+  // scheduled via millis() because M5.Beep.tone() is one-at-a-time —
+  // calling it twice in the same tick stomps the first note.
+  static PersonaState prevActiveState = P_SLEEP;
+  static uint32_t chimeNote2At = 0;
+  if (activeState == P_CELEBRATE && prevActiveState != P_CELEBRATE) {
+    beep(2000, 100);
+    chimeNote2At = now + 130;
+  }
+  if (chimeNote2At && (int32_t)(now - chimeNote2At) >= 0) {
+    beep(2800, 150);
+    chimeNote2At = 0;
+  }
+  prevActiveState = activeState;
+
   // LED: pulse on attention, otherwise off
   if (activeState == P_ATTENTION && settings().led) {
     digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
